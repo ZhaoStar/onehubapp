@@ -2,12 +2,19 @@ package com.example.onehubapp
 
 import android.app.ActivityManager
 import android.content.Context
+import android.media.MediaScannerConnection
+import android.os.Environment
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 
 class MainActivity : FlutterActivity() {
+    companion object {
+        private const val SYSTEM_METRICS_CHANNEL = "onehubapp/system_metrics"
+        private const val FILES_CHANNEL = "onehubapp/files"
+    }
+
     private var lastCpuSnapshot: CpuSnapshot? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -15,7 +22,7 @@ class MainActivity : FlutterActivity() {
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
-            "onehubapp/system_metrics"
+            SYSTEM_METRICS_CHANNEL
         ).setMethodCallHandler { call, result ->
             when (call.method) {
                 "getSystemMetrics" -> result.success(
@@ -24,6 +31,35 @@ class MainActivity : FlutterActivity() {
                         "memoryUsage" to readMemoryUsage()
                     )
                 )
+                else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            FILES_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getPublicDownloadsPath" -> {
+                    val downloadsDir = Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_DOWNLOADS
+                    )
+                    result.success(downloadsDir.absolutePath)
+                }
+                "scanFile" -> {
+                    val path = call.argument<String>("path")
+                    if (path.isNullOrBlank()) {
+                        result.error("invalid_path", "Path is required.", null)
+                        return@setMethodCallHandler
+                    }
+
+                    MediaScannerConnection.scanFile(
+                        applicationContext,
+                        arrayOf(path),
+                        null
+                    ) { _, _ -> }
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }

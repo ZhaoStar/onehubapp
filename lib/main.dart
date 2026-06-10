@@ -5,8 +5,11 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() {
   runApp(const MyApp());
@@ -273,7 +276,9 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
+    final keyboardVisible = MediaQuery.of(context).viewInsets.bottom > 0;
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       body: SafeArea(
         child: _isBootstrapping
             ? const Center(child: CircularProgressIndicator())
@@ -281,27 +286,49 @@ class _LoginPageState extends State<LoginPage> {
                 builder: (context, constraints) {
                   final compact = constraints.maxHeight < 720;
                   final padding = compact ? 20.0 : 28.0;
-                  final headerGap = compact ? 18.0 : 42.0;
-                  final titleGap = compact ? 6.0 : 12.0;
-                  final formGap = compact ? 16.0 : 30.0;
-                  final fieldGap = compact ? 10.0 : 18.0;
-                  final actionGap = compact ? 10.0 : 20.0;
+                  final headerGap = keyboardVisible
+                      ? (compact ? 12.0 : 18.0)
+                      : (compact ? 18.0 : 42.0);
+                  final titleGap = keyboardVisible
+                      ? 4.0
+                      : (compact ? 6.0 : 12.0);
+                  final formGap = keyboardVisible
+                      ? 14.0
+                      : (compact ? 16.0 : 30.0);
+                  final fieldGap = keyboardVisible
+                      ? 8.0
+                      : (compact ? 10.0 : 18.0);
+                  final actionGap = keyboardVisible
+                      ? 8.0
+                      : (compact ? 10.0 : 20.0);
                   final buttonHeight = compact ? 50.0 : 60.0;
+                  final topPadding = keyboardVisible ? 12.0 : 18.0;
+                  final bottomPadding = keyboardVisible ? 12.0 : 18.0;
 
-                  return Padding(
-                    padding: EdgeInsets.symmetric(
-                      horizontal: padding,
-                      vertical: 18,
+                  return SingleChildScrollView(
+                    keyboardDismissBehavior:
+                        ScrollViewKeyboardDismissBehavior.onDrag,
+                    padding: EdgeInsets.fromLTRB(
+                      padding,
+                      topPadding,
+                      padding,
+                      bottomPadding,
                     ),
-                    child: Center(
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 560),
-                        child: SizedBox(
-                          height: constraints.maxHeight - 36,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight:
+                            constraints.maxHeight - topPadding - bottomPadding,
+                      ),
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 560),
                           child: Form(
                             key: _formKey,
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
+                              mainAxisAlignment: keyboardVisible
+                                  ? MainAxisAlignment.start
+                                  : MainAxisAlignment.center,
                               children: [
                                 LoginHeader(compact: compact),
                                 SizedBox(height: headerGap),
@@ -478,7 +505,6 @@ class _LoginPageState extends State<LoginPage> {
                                     ),
                                   ),
                                 ),
-                                const Spacer(),
                               ],
                             ),
                           ),
@@ -605,6 +631,14 @@ class _WorkstationPageState extends State<WorkstationPage> {
       Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) => VideoToMp3Page(username: widget.username),
+        ),
+      );
+      return;
+    }
+    if (feature == '抖音下载') {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => DouyinDownloaderPage(username: widget.username),
         ),
       );
       return;
@@ -797,19 +831,7 @@ class ServiceCard extends StatelessWidget {
                   color: AppColors.textPrimary,
                 ),
               ),
-              const SizedBox(height: 8),
-              Expanded(
-                child: Text(
-                  service.subtitle,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    height: 1.25,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ),
+              const Spacer(),
             ],
           ),
         ),
@@ -889,14 +911,15 @@ class VideoToMp3Page extends StatefulWidget {
 }
 
 class _VideoToMp3PageState extends State<VideoToMp3Page> {
-  static final Uri _createTaskUri = Uri.https(
+  static final Uri _uploadInitUri = Uri.https(
     'api.onehubai.online',
-    '/api/v1/convert/',
+    '/api/v1/upload/init',
   );
   static final Uri _tasksUri = Uri.https(
     'api.onehubai.online',
     '/api/v1/convert/tasks',
   );
+  static const int _chunkSize = 8 * 1024 * 1024;
   static const double _maxFileSize = 500 * 1024 * 1024;
 
   PlatformFile? _selectedFile;
@@ -1003,52 +1026,68 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
 
     setState(() {
       _isSubmitting = true;
-      _localProgress = 0.16;
-      _submitHint = '正在上传视频并创建转换任务...';
+      _localProgress = 0;
+      _submitHint = '正在初始化上传任务...';
     });
 
     try {
-      final request = http.MultipartRequest('POST', _createTaskUri)
-        ..headers[HttpHeaders.authorizationHeader] =
-            'Bearer ${session.accessToken}'
-        ..fields['bitrate'] = '192k'
-        ..fields['sample_rate'] = '44100'
-        ..fields['channels'] = '2';
+      final totalChunks = (file.size / _chunkSize).ceil();
+      final uploadInit = await _initChunkUpload(
+        accessToken: session.accessToken,
+        fileName: file.name,
+        fileSize: file.size,
+        totalChunks: totalChunks,
+      );
 
-      final multipartFile = file.readStream != null
-          ? http.MultipartFile(
-              'file',
-              file.readStream!,
-              file.size,
-              filename: file.name,
-            )
-          : await http.MultipartFile.fromPath(
-              'file',
-              file.path!,
-              filename: file.name,
-            );
+      final uploadId = uploadInit.uploadId;
+      final completedChunks = uploadInit.completedChunks;
 
-      request.files.add(multipartFile);
+      for (var index = 0; index < totalChunks; index++) {
+        if (completedChunks.contains(index)) {
+          if (mounted) {
+            setState(() {
+              _localProgress = ((index + 1) / totalChunks) * 0.9;
+              _submitHint = '正在上传分片 ${index + 1}/$totalChunks...';
+            });
+          }
+          continue;
+        }
 
-      setState(() {
-        _localProgress = 0.52;
-      });
-      final streamedResponse = await request.send();
-      final body = await streamedResponse.stream.bytesToString();
+        await _uploadChunk(
+          accessToken: session.accessToken,
+          file: file,
+          uploadId: uploadId,
+          chunkIndex: index,
+        );
 
-      if (streamedResponse.statusCode == HttpStatus.ok) {
-        setState(() {
-          _localProgress = 1;
-          _selectedFile = null;
-          _submitHint = '转换任务已创建，后台正在处理';
-        });
-        if (!mounted) return;
-        AppMessage.show(context, '转换任务创建成功', type: AppMessageType.success);
-        await _refreshTasks(showLoading: false);
-        return;
+        if (mounted) {
+          setState(() {
+            _localProgress = ((index + 1) / totalChunks) * 0.9;
+            _submitHint = '正在上传分片 ${index + 1}/$totalChunks...';
+          });
+        }
       }
 
-      throw FormatException(_readApiMessage(body, fallback: '创建转换任务失败，请稍后重试'));
+      if (mounted) {
+        setState(() {
+          _localProgress = 0.94;
+          _submitHint = '正在合并分片并创建转换任务...';
+        });
+      }
+
+      await _completeChunkUpload(
+        accessToken: session.accessToken,
+        uploadId: uploadId,
+      );
+
+      setState(() {
+        _localProgress = 1;
+        _selectedFile = null;
+        _submitHint = '转换任务已创建，后台正在处理';
+      });
+      if (!mounted) return;
+      AppMessage.show(context, '转换任务创建成功', type: AppMessageType.success);
+      await _refreshTasks(showLoading: false);
     } catch (error) {
       if (!mounted) return;
       final message = error is FormatException
@@ -1065,6 +1104,122 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
           _localProgress = 0;
         });
       }
+    }
+  }
+
+  Future<_UploadInitResult> _initChunkUpload({
+    required String accessToken,
+    required String fileName,
+    required int fileSize,
+    required int totalChunks,
+  }) async {
+    final client = HttpClient();
+    try {
+      final request = await client.postUrl(_uploadInitUri);
+      request.headers.contentType = ContentType.json;
+      request.headers.set(
+        HttpHeaders.authorizationHeader,
+        'Bearer $accessToken',
+      );
+      request.write(
+        jsonEncode({
+          'filename': fileName,
+          'file_size': fileSize,
+          'total_chunks': totalChunks,
+          'chunk_size': _chunkSize,
+        }),
+      );
+      final response = await request.close();
+      final body = await utf8.decoder.bind(response).join();
+      if (response.statusCode != HttpStatus.ok) {
+        throw FormatException(_readApiMessage(body, fallback: '初始化上传失败'));
+      }
+      final payload = jsonDecode(body) as Map<String, dynamic>;
+      final uploadId = payload['upload_id']?.toString();
+      final chunksReceived =
+          (payload['chunks_received'] as List<dynamic>? ?? const [])
+              .map((item) => int.tryParse(item.toString()))
+              .whereType<int>()
+              .toSet();
+      if (uploadId == null || uploadId.isEmpty) {
+        throw const FormatException('初始化上传失败，服务端未返回 upload_id');
+      }
+      return _UploadInitResult(
+        uploadId: uploadId,
+        completedChunks: chunksReceived,
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<void> _uploadChunk({
+    required String accessToken,
+    required PlatformFile file,
+    required String uploadId,
+    required int chunkIndex,
+  }) async {
+    final start = chunkIndex * _chunkSize;
+    final end = (start + _chunkSize > file.size)
+        ? file.size
+        : start + _chunkSize;
+    final length = end - start;
+    final uri = Uri.https(
+      'api.onehubai.online',
+      '/api/v1/upload/$uploadId/chunk',
+    );
+
+    final request = http.MultipartRequest('POST', uri)
+      ..headers[HttpHeaders.authorizationHeader] = 'Bearer $accessToken'
+      ..fields['chunk_index'] = '$chunkIndex';
+
+    final stream = file.xFile.openRead(start, end);
+    request.files.add(
+      http.MultipartFile(
+        'file',
+        stream,
+        length,
+        filename: '${file.name}.part$chunkIndex',
+      ),
+    );
+
+    final response = await request.send();
+    final body = await response.stream.bytesToString();
+    if (response.statusCode != HttpStatus.ok) {
+      throw FormatException(_readApiMessage(body, fallback: '上传分片失败'));
+    }
+  }
+
+  Future<void> _completeChunkUpload({
+    required String accessToken,
+    required String uploadId,
+  }) async {
+    final client = HttpClient();
+    try {
+      final request = await client.postUrl(
+        Uri.https('api.onehubai.online', '/api/v1/upload/$uploadId/complete'),
+      );
+      request.headers.contentType = ContentType.json;
+      request.headers.set(
+        HttpHeaders.authorizationHeader,
+        'Bearer $accessToken',
+      );
+      request.write(
+        jsonEncode({
+          'bitrate': '192k',
+          'sample_rate': 44100,
+          'channels': 2,
+          'start_time': null,
+          'end_time': null,
+        }),
+      );
+      final response = await request.close();
+      final body = await utf8.decoder.bind(response).join();
+      if (response.statusCode != HttpStatus.ok) {
+        throw FormatException(_readApiMessage(body, fallback: '创建转换任务失败'));
+      }
+    } finally {
+      client.close(force: true);
     }
   }
 
@@ -1524,6 +1679,16 @@ class _EmptyHistoryCard extends StatelessWidget {
   }
 }
 
+class _UploadInitResult {
+  const _UploadInitResult({
+    required this.uploadId,
+    required this.completedChunks,
+  });
+
+  final String uploadId;
+  final Set<int> completedChunks;
+}
+
 class _ConversionTaskCard extends StatelessWidget {
   const _ConversionTaskCard({required this.task, required this.onAction});
 
@@ -1636,6 +1801,1194 @@ class _ConversionTaskCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class DouyinDownloaderPage extends StatefulWidget {
+  const DouyinDownloaderPage({required this.username, super.key});
+
+  final String username;
+
+  @override
+  State<DouyinDownloaderPage> createState() => _DouyinDownloaderPageState();
+}
+
+class _DouyinDownloaderPageState extends State<DouyinDownloaderPage> {
+  static final Uri _parseUri = Uri.https(
+    'api.onehubai.online',
+    '/api/hybrid/video_data',
+  );
+  static final Uri _remoteConvertUri = Uri.https(
+    'api.onehubai.online',
+    '/api/v1/convert/remote',
+  );
+  static const MethodChannel _filesChannel = MethodChannel('onehubapp/files');
+
+  final TextEditingController _inputController = TextEditingController();
+  bool _isParsing = false;
+  bool _isCreatingMp3 = false;
+  String? _downloadingKey;
+  String _statusText = '';
+  String? _errorText;
+  List<String> _urls = const [];
+  List<DouyinParseResult> _results = const [];
+
+  @override
+  void dispose() {
+    _inputController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _parseBatch() async {
+    final rawInput = _inputController.text.trim();
+    if (rawInput.isEmpty || _isParsing) return;
+
+    final urls = _extractUrls(rawInput);
+    if (urls.isEmpty) {
+      setState(() {
+        _errorText = '没有检测到有效链接，请粘贴抖音分享文案或完整链接';
+        _statusText = '';
+        _urls = const [];
+        _results = const [];
+      });
+      AppMessage.show(context, _errorText!, type: AppMessageType.warning);
+      return;
+    }
+
+    final session = await AuthSession.restore();
+    setState(() {
+      _isParsing = true;
+      _errorText = null;
+      _statusText = '';
+      _urls = urls;
+      _results = const [];
+    });
+
+    final parsedResults = <DouyinParseResult>[];
+    for (var index = 0; index < urls.length; index++) {
+      final sourceUrl = urls[index];
+      if (mounted) {
+        setState(() {
+          _statusText = '正在解析第 ${index + 1}/${urls.length} 条链接';
+        });
+      }
+
+      try {
+        final result = await _parseSingleUrl(
+          sourceUrl,
+          accessToken: session?.accessToken,
+        );
+        parsedResults.add(result);
+      } catch (error) {
+        parsedResults.add(
+          DouyinParseResult.failed(sourceUrl: sourceUrl, error: '$error'),
+        );
+      }
+
+      if (mounted) {
+        setState(() {
+          _results = List<DouyinParseResult>.from(parsedResults);
+        });
+      }
+    }
+
+    final successCount = parsedResults.where((item) => item.isSuccess).length;
+    final failedCount = parsedResults.length - successCount;
+    if (!mounted) return;
+    setState(() {
+      _isParsing = false;
+      _statusText =
+          '解析完成，共 ${urls.length} 条，成功 $successCount 条，失败 $failedCount 条';
+      _results = parsedResults;
+    });
+  }
+
+  Future<DouyinParseResult> _parseSingleUrl(
+    String sourceUrl, {
+    String? accessToken,
+  }) async {
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(
+        _parseUri.replace(
+          queryParameters: {'url': sourceUrl, 'minimal': 'true'},
+        ),
+      );
+      if (accessToken != null && accessToken.isNotEmpty) {
+        request.headers.set(
+          HttpHeaders.authorizationHeader,
+          'Bearer $accessToken',
+        );
+      }
+
+      final response = await request.close();
+      final body = await utf8.decoder.bind(response).join();
+      if (response.statusCode != HttpStatus.ok) {
+        throw _readApiError(body, fallback: '解析失败，请稍后重试');
+      }
+
+      final payload = jsonDecode(body);
+      return DouyinParseResult.fromPayload(payload, sourceUrl);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<void> _openExternalUrl(String rawUrl, {String? fallbackLabel}) async {
+    final url = Uri.tryParse(rawUrl);
+    if (url == null) {
+      AppMessage.show(context, '链接无效，无法打开', type: AppMessageType.error);
+      return;
+    }
+
+    final launched = await launchUrl(url, mode: LaunchMode.externalApplication);
+    if (!launched && mounted) {
+      AppMessage.show(
+        context,
+        '${fallbackLabel ?? '目标链接'} 打开失败',
+        type: AppMessageType.error,
+      );
+    }
+  }
+
+  Future<void> _downloadToFile(
+    DouyinParseResult result, {
+    required bool withWatermark,
+  }) async {
+    final downloadUrl = withWatermark
+        ? result.secondaryDownloadUrl
+        : result.downloadUrl;
+    if (downloadUrl.isEmpty || _downloadingKey != null) return;
+
+    setState(() {
+      _downloadingKey = '${result.sourceUrl}|$withWatermark';
+    });
+
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse(downloadUrl);
+      final request = await client.getUrl(uri);
+      final session = await AuthSession.restore();
+      if (session != null && session.accessToken.isNotEmpty) {
+        request.headers.set(
+          HttpHeaders.authorizationHeader,
+          'Bearer ${session.accessToken}',
+        );
+      }
+
+      final response = await request.close();
+      if (response.statusCode != HttpStatus.ok) {
+        final body = await utf8.decoder.bind(response).join();
+        throw _readApiError(body, fallback: '下载失败，请稍后重试');
+      }
+
+      final directory = await _resolveDownloadDirectory();
+      await directory.create(recursive: true);
+      final fileName = _buildDownloadFileName(
+        result: result,
+        withWatermark: withWatermark,
+        response: response,
+        requestUri: uri,
+      );
+      final file = File('${directory.path}\\$fileName');
+      final sink = file.openWrite();
+      await response.forEach(sink.add);
+      await sink.close();
+      if (Platform.isAndroid) {
+        await _filesChannel.invokeMethod('scanFile', {'path': file.path});
+      }
+
+      if (!mounted) return;
+      AppMessage.show(
+        context,
+        '已保存到 ${file.path}',
+        type: AppMessageType.success,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      AppMessage.show(context, '$error', type: AppMessageType.error);
+    } finally {
+      client.close(force: true);
+      if (mounted) {
+        setState(() {
+          _downloadingKey = null;
+        });
+      }
+    }
+  }
+
+  Future<Directory> _resolveDownloadDirectory() async {
+    if (Platform.isAndroid) {
+      final publicPath = await _filesChannel.invokeMethod<String>(
+        'getPublicDownloadsPath',
+      );
+      if (publicPath != null && publicPath.isNotEmpty) {
+        return Directory(publicPath);
+      }
+    }
+    final docsDir = await getApplicationDocumentsDirectory();
+    return Directory('${docsDir.path}\\downloads');
+  }
+
+  String _buildDownloadFileName({
+    required DouyinParseResult result,
+    required bool withWatermark,
+    required HttpClientResponse response,
+    required Uri requestUri,
+  }) {
+    final contentDisposition =
+        response.headers.value('content-disposition') ?? '';
+    final headerName = _parseContentDispositionFileName(contentDisposition);
+    if (headerName.isNotEmpty) return _sanitizeFileName(headerName);
+
+    final rawName = result.title.trim().isEmpty
+        ? 'onehub_download'
+        : result.title;
+    final suffix = withWatermark ? '_watermark' : '_clean';
+    final extension = _resolveDownloadExtension(
+      result: result,
+      response: response,
+      requestUri: requestUri,
+    );
+    return '${_sanitizeFileName(rawName)}$suffix$extension';
+  }
+
+  String _resolveDownloadExtension({
+    required DouyinParseResult result,
+    required HttpClientResponse response,
+    required Uri requestUri,
+  }) {
+    final path = requestUri.path.toLowerCase();
+    if (result.type == 'image') return '.zip';
+    if (path.endsWith('.mp4')) return '.mp4';
+    if (path.endsWith('.mov')) return '.mov';
+    final contentType = response.headers.contentType;
+    if (contentType != null) {
+      final mime = '${contentType.primaryType}/${contentType.subType}'
+          .toLowerCase();
+      if (mime == 'video/mp4') return '.mp4';
+      if (mime == 'video/quicktime') return '.mov';
+      if (mime == 'application/zip') return '.zip';
+    }
+    return result.type == 'image' ? '.zip' : '.mp4';
+  }
+
+  String _parseContentDispositionFileName(String header) {
+    final utf8Match = RegExp(
+      r"filename\*=UTF-8''([^;]+)",
+      caseSensitive: false,
+    ).firstMatch(header);
+    if (utf8Match != null) {
+      return Uri.decodeComponent(utf8Match.group(1) ?? '');
+    }
+    final normalMatch = RegExp(
+      r'filename="?([^"]+)"?',
+      caseSensitive: false,
+    ).firstMatch(header);
+    return normalMatch?.group(1) ?? '';
+  }
+
+  String _sanitizeFileName(String fileName) {
+    return fileName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+  }
+
+  Future<void> _createRemoteMp3(DouyinParseResult result) async {
+    if (_isCreatingMp3 || result.videoNoWatermarkUrl.isEmpty) return;
+    final session = await AuthSession.restore();
+    if (session == null) {
+      if (!mounted) return;
+      AppMessage.show(context, '登录状态已失效，请重新登录', type: AppMessageType.warning);
+      return;
+    }
+
+    setState(() {
+      _isCreatingMp3 = true;
+    });
+
+    final client = HttpClient();
+    try {
+      final request = await client.postUrl(_remoteConvertUri);
+      request.headers.contentType = ContentType.json;
+      request.headers.set(
+        HttpHeaders.authorizationHeader,
+        'Bearer ${session.accessToken}',
+      );
+      request.write(
+        jsonEncode({
+          'url': result.videoNoWatermarkUrl,
+          'bitrate': '192k',
+          'sample_rate': 44100,
+          'channels': 2,
+          'filename': result.title,
+        }),
+      );
+
+      final response = await request.close();
+      final body = await utf8.decoder.bind(response).join();
+      if (response.statusCode != HttpStatus.ok) {
+        throw _readApiError(body, fallback: '创建转换任务失败，请稍后重试');
+      }
+      if (!mounted) return;
+      AppMessage.show(context, '已创建 MP3 转换任务', type: AppMessageType.success);
+    } catch (error) {
+      if (!mounted) return;
+      AppMessage.show(context, '$error', type: AppMessageType.error);
+    } finally {
+      client.close(force: true);
+      if (mounted) {
+        setState(() {
+          _isCreatingMp3 = false;
+        });
+      }
+    }
+  }
+
+  void _resetResults() {
+    setState(() {
+      _inputController.clear();
+      _statusText = '';
+      _errorText = null;
+      _urls = const [];
+      _results = const [];
+      _isParsing = false;
+    });
+  }
+
+  List<String> _extractUrls(String input) {
+    final regExp = RegExp(
+      r"https?:\/\/(?:[a-zA-Z0-9$\-_.+!*'(),]|%[0-9a-fA-F]{2}|[\/:@&=?#])+",
+    );
+    final matches = regExp.allMatches(input);
+    final unique = <String>{};
+    for (final match in matches) {
+      final url = match.group(0);
+      if (url != null && url.isNotEmpty) {
+        unique.add(url);
+      }
+    }
+    return unique.toList();
+  }
+
+  String _readApiError(String body, {required String fallback}) {
+    try {
+      final payload = jsonDecode(body);
+      if (payload is Map<String, dynamic>) {
+        final detail = payload['detail'];
+        if (detail is String && detail.isNotEmpty) return detail;
+        if (detail is Map<String, dynamic>) {
+          final message = detail['message'];
+          if (message is String && message.isNotEmpty) return message;
+        }
+        final message = payload['message'];
+        if (message is String && message.isNotEmpty) return message;
+      }
+    } catch (_) {
+      return fallback;
+    }
+    return fallback;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final successCount = _results.where((item) => item.isSuccess).length;
+    final failedCount = _results.where((item) => !item.isSuccess).length;
+    final avatarText = widget.username.trim().isEmpty
+        ? 'U'
+        : widget.username.trim().substring(0, 1).toUpperCase();
+
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: SafeArea(
+        child: Column(
+          children: [
+            Container(
+              height: 88,
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              decoration: const BoxDecoration(
+                color: AppColors.background,
+                border: Border(bottom: BorderSide(color: AppColors.border)),
+              ),
+              child: Row(
+                children: [
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.arrow_back_ios_new_rounded),
+                    color: AppColors.primary,
+                  ),
+                  const SizedBox(width: 6),
+                  const Expanded(
+                    child: Text(
+                      '抖音下载',
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 24,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => AppMessage.show(
+                      context,
+                      '支持解析抖音分享文案和视频链接',
+                      type: AppMessageType.info,
+                    ),
+                    icon: const Icon(Icons.info_outline_rounded),
+                    color: AppColors.primary,
+                  ),
+                  const SizedBox(width: 10),
+                  CircleAvatar(
+                    radius: 20,
+                    backgroundColor: AppColors.primary.withValues(alpha: 0.12),
+                    child: Text(
+                      avatarText,
+                      style: const TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(22, 20, 22, 24),
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          '批量解析模式',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          '粘贴抖音分享文案或多个链接，前端先自动提取 URL，再逐条调用解析接口。',
+                          style: TextStyle(
+                            fontSize: 14,
+                            height: 1.45,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            _StatPill(label: '已提取', value: '${_urls.length}'),
+                            const SizedBox(width: 10),
+                            _StatPill(label: '成功', value: '$successCount'),
+                            const SizedBox(width: 10),
+                            _StatPill(label: '失败', value: '$failedCount'),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: _inputController,
+                          minLines: 6,
+                          maxLines: 8,
+                          decoration: InputDecoration(
+                            hintText: '请粘贴抖音 / TikTok / Bilibili 分享文案或多个链接',
+                            hintStyle: const TextStyle(
+                              color: AppColors.placeholder,
+                              fontSize: 15,
+                            ),
+                            filled: true,
+                            fillColor: AppColors.background,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(18),
+                              borderSide: const BorderSide(
+                                color: AppColors.border,
+                              ),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(18),
+                              borderSide: const BorderSide(
+                                color: AppColors.border,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(18),
+                              borderSide: const BorderSide(
+                                color: AppColors.primary,
+                                width: 1.5,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: FilledButton(
+                                onPressed: _isParsing ? null : _parseBatch,
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: AppColors.primary,
+                                  foregroundColor: Colors.white,
+                                  minimumSize: const Size(0, 52),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                ),
+                                child: Text(_isParsing ? '解析中...' : '开始解析'),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed:
+                                    (_isParsing ||
+                                        (_urls.isEmpty && _results.isEmpty))
+                                    ? null
+                                    : _resetResults,
+                                style: OutlinedButton.styleFrom(
+                                  minimumSize: const Size(0, 52),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  side: const BorderSide(
+                                    color: AppColors.border,
+                                  ),
+                                ),
+                                child: const Text('清空结果'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (_errorText != null) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            _errorText!,
+                            style: const TextStyle(
+                              color: AppColors.error,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                        if (_statusText.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            _statusText,
+                            style: const TextStyle(
+                              color: AppColors.primary,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (_urls.isNotEmpty) ...[
+                    const SizedBox(height: 20),
+                    Container(
+                      padding: const EdgeInsets.all(18),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(22),
+                        border: Border.all(color: AppColors.border),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Expanded(
+                                child: Text(
+                                  '提取到的链接',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                '${_urls.length} 条',
+                                style: const TextStyle(
+                                  color: AppColors.textSecondary,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          ..._urls.map(
+                            (url) => Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: Text(
+                                url,
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  color: AppColors.textSecondary,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  if (_results.isNotEmpty) ...[
+                    const SizedBox(height: 20),
+                    ..._results.map(
+                      (result) => Padding(
+                        padding: const EdgeInsets.only(bottom: 16),
+                        child: _DouyinResultCard(
+                          result: result,
+                          mp3Busy: _isCreatingMp3,
+                          downloadBusyKey: _downloadingKey,
+                          onDownloadFile: _downloadToFile,
+                          onOpenDownload: _openExternalUrl,
+                          onCreateMp3: _createRemoteMp3,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StatPill extends StatelessWidget {
+  const _StatPill({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppColors.primary.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              value,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: AppColors.primary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DouyinResultCard extends StatelessWidget {
+  const _DouyinResultCard({
+    required this.result,
+    required this.mp3Busy,
+    required this.downloadBusyKey,
+    required this.onDownloadFile,
+    required this.onOpenDownload,
+    required this.onCreateMp3,
+  });
+
+  final DouyinParseResult result;
+  final bool mp3Busy;
+  final String? downloadBusyKey;
+  final Future<void> Function(
+    DouyinParseResult result, {
+    required bool withWatermark,
+  })
+  onDownloadFile;
+  final Future<void> Function(String rawUrl, {String? fallbackLabel})
+  onOpenDownload;
+  final Future<void> Function(DouyinParseResult result) onCreateMp3;
+
+  @override
+  Widget build(BuildContext context) {
+    final cleanDownloadBusy = downloadBusyKey == '${result.sourceUrl}|false';
+    final watermarkDownloadBusy = downloadBusyKey == '${result.sourceUrl}|true';
+
+    if (!result.isSuccess) {
+      return Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: const [
+                Icon(Icons.error_outline_rounded, color: AppColors.error),
+                SizedBox(width: 8),
+                Text(
+                  '解析失败',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.error,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              result.sourceUrl,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              result.errorMessage,
+              style: const TextStyle(fontSize: 13, color: AppColors.error),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (result.cover.isNotEmpty)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: Image.network(
+                    result.cover,
+                    width: 84,
+                    height: 84,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => Container(
+                      width: 84,
+                      height: 84,
+                      color: AppColors.background,
+                      child: const Icon(Icons.image_not_supported_outlined),
+                    ),
+                  ),
+                )
+              else
+                Container(
+                  width: 84,
+                  height: 84,
+                  decoration: BoxDecoration(
+                    color: AppColors.background,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: const Icon(Icons.video_library_outlined),
+                ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      result.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '${result.platformLabel} · ${result.typeLabel}',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    if (result.authorName.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        '作者：${result.authorName}',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                    if (result.videoId.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        '作品 ID：${result.videoId}',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (result.metrics.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: result.metrics
+                  .map(
+                    (metric) => Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.background,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: RichText(
+                        text: TextSpan(
+                          style: const TextStyle(color: AppColors.textPrimary),
+                          children: [
+                            TextSpan(
+                              text: '${metric.label} ',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
+                            TextSpan(
+                              text: metric.value,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ],
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              if (result.downloadUrl.isNotEmpty)
+                FilledButton.icon(
+                  onPressed: cleanDownloadBusy
+                      ? null
+                      : () => onDownloadFile(result, withWatermark: false),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: cleanDownloadBusy
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.download_rounded),
+                  label: Text(
+                    cleanDownloadBusy ? '保存中...' : result.primaryActionLabel,
+                  ),
+                ),
+              if (result.secondaryDownloadUrl.isNotEmpty)
+                OutlinedButton.icon(
+                  onPressed: watermarkDownloadBusy
+                      ? null
+                      : () => onDownloadFile(result, withWatermark: true),
+                  icon: watermarkDownloadBusy
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.file_download_outlined),
+                  label: Text(
+                    watermarkDownloadBusy
+                        ? '保存中...'
+                        : result.secondaryActionLabel,
+                  ),
+                ),
+              if (result.type == 'video' &&
+                  result.videoNoWatermarkUrl.isNotEmpty)
+                OutlinedButton.icon(
+                  onPressed: mp3Busy ? null : () => onCreateMp3(result),
+                  icon: const Icon(Icons.audio_file_outlined),
+                  label: Text(mp3Busy ? '提交中...' : '转为 MP3'),
+                ),
+              if (result.previewUrl.isNotEmpty)
+                OutlinedButton.icon(
+                  onPressed: () =>
+                      onOpenDownload(result.previewUrl, fallbackLabel: '预览链接'),
+                  icon: const Icon(Icons.open_in_new_rounded),
+                  label: const Text('打开预览'),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class DouyinParseResult {
+  const DouyinParseResult({
+    required this.isSuccess,
+    required this.sourceUrl,
+    required this.errorMessage,
+    required this.title,
+    required this.cover,
+    required this.type,
+    required this.platformLabel,
+    required this.typeLabel,
+    required this.videoId,
+    required this.authorName,
+    required this.metrics,
+    required this.previewUrl,
+    required this.videoNoWatermarkUrl,
+    required this.downloadUrl,
+    required this.secondaryDownloadUrl,
+    required this.primaryActionLabel,
+    required this.secondaryActionLabel,
+  });
+
+  factory DouyinParseResult.failed({
+    required String sourceUrl,
+    required String error,
+  }) {
+    return DouyinParseResult(
+      isSuccess: false,
+      sourceUrl: sourceUrl,
+      errorMessage: error,
+      title: '',
+      cover: '',
+      type: '',
+      platformLabel: '',
+      typeLabel: '',
+      videoId: '',
+      authorName: '',
+      metrics: const [],
+      previewUrl: '',
+      videoNoWatermarkUrl: '',
+      downloadUrl: '',
+      secondaryDownloadUrl: '',
+      primaryActionLabel: '',
+      secondaryActionLabel: '',
+    );
+  }
+
+  factory DouyinParseResult.fromPayload(dynamic payload, String sourceUrl) {
+    final response = payload is Map<String, dynamic>
+        ? payload
+        : <String, dynamic>{};
+    final data = response['data'] is Map<String, dynamic>
+        ? response['data'] as Map<String, dynamic>
+        : <String, dynamic>{};
+    final author = data['author'] is Map<String, dynamic>
+        ? data['author'] as Map<String, dynamic>
+        : <String, dynamic>{};
+    final videoData = data['video_data'] is Map<String, dynamic>
+        ? data['video_data'] as Map<String, dynamic>
+        : <String, dynamic>{};
+    final imageData = data['image_data'] is Map<String, dynamic>
+        ? data['image_data'] as Map<String, dynamic>
+        : <String, dynamic>{};
+
+    final type = (data['type'] ?? '').toString();
+    final platform = (data['platform'] ?? '').toString();
+    final title = (data['desc'] ?? data['title'] ?? '未命名作品').toString();
+    final cover = _pickFirstHttpUrl([
+      data['cover'],
+      data['video_cover'],
+      videoData['cover'],
+      videoData['origin_cover'],
+      imageData['cover'],
+      imageData['dynamic_cover'],
+    ]);
+    final videoId = (data['video_id'] ?? data['aweme_id'] ?? data['id'] ?? '')
+        .toString();
+    final authorName =
+        (author['nickname'] ??
+                author['name'] ??
+                author['unique_id'] ??
+                author['sec_uid'] ??
+                '')
+            .toString();
+    final noWatermarkUrl = _pickFirstHttpUrl([
+      videoData['nwm_video_url_HQ'],
+      videoData['nwm_video_url'],
+      videoData['no_watermark_video_url'],
+    ]);
+    final watermarkUrl = _pickFirstHttpUrl([
+      videoData['wm_video_url_HQ'],
+      videoData['wm_video_url'],
+      videoData['watermark_video_url'],
+    ]);
+    final imageList =
+        (imageData['no_watermark_image_list'] is List<dynamic>
+                ? imageData['no_watermark_image_list'] as List<dynamic>
+                : const <dynamic>[])
+            .map((item) => item.toString())
+            .where(_isHttpUrl)
+            .toList();
+
+    final previewUrl = type == 'image'
+        ? (imageList.isNotEmpty ? imageList.first : '')
+        : (noWatermarkUrl.isNotEmpty ? noWatermarkUrl : watermarkUrl);
+    final downloadUrl = _createDownloadUrl(sourceUrl, withWatermark: false);
+    final secondaryDownloadUrl = _createDownloadUrl(
+      sourceUrl,
+      withWatermark: true,
+    );
+
+    return DouyinParseResult(
+      isSuccess: true,
+      sourceUrl: sourceUrl,
+      errorMessage: '',
+      title: title,
+      cover: cover,
+      type: type,
+      platformLabel: _platformLabel(platform),
+      typeLabel: _typeLabel(type),
+      videoId: videoId,
+      authorName: authorName,
+      metrics: _buildMetrics({
+        'likes': data['digg_count'] ?? data['statistics']?['digg_count'],
+        'comments':
+            data['comment_count'] ?? data['statistics']?['comment_count'],
+        'collects':
+            data['collect_count'] ?? data['statistics']?['collect_count'],
+        'shares': data['share_count'] ?? data['statistics']?['share_count'],
+      }),
+      previewUrl: previewUrl,
+      videoNoWatermarkUrl: noWatermarkUrl,
+      downloadUrl: downloadUrl,
+      secondaryDownloadUrl: secondaryDownloadUrl,
+      primaryActionLabel: type == 'image' ? '下载图集 ZIP' : '下载无水印',
+      secondaryActionLabel: type == 'image' ? '下载带水印 ZIP' : '下载带水印',
+    );
+  }
+
+  final bool isSuccess;
+  final String sourceUrl;
+  final String errorMessage;
+  final String title;
+  final String cover;
+  final String type;
+  final String platformLabel;
+  final String typeLabel;
+  final String videoId;
+  final String authorName;
+  final List<MetricItem> metrics;
+  final String previewUrl;
+  final String videoNoWatermarkUrl;
+  final String downloadUrl;
+  final String secondaryDownloadUrl;
+  final String primaryActionLabel;
+  final String secondaryActionLabel;
+
+  static bool _isHttpUrl(String value) =>
+      value.startsWith('http://') || value.startsWith('https://');
+
+  static String _pickFirstHttpUrl(List<dynamic> candidates) {
+    for (final candidate in candidates) {
+      final text = candidate?.toString() ?? '';
+      if (_isHttpUrl(text)) return text;
+    }
+    return '';
+  }
+
+  static String _createDownloadUrl(
+    String sourceUrl, {
+    required bool withWatermark,
+  }) {
+    if (sourceUrl.isEmpty) return '';
+    return Uri.https('api.onehubai.online', '/api/download', {
+      'url': sourceUrl,
+      'prefix': 'true',
+      'with_watermark': withWatermark.toString(),
+    }).toString();
+  }
+
+  static String _platformLabel(String platform) {
+    if (platform == 'douyin') return '抖音';
+    if (platform == 'tiktok') return 'TikTok';
+    if (platform == 'bilibili') return 'Bilibili';
+    return platform.isEmpty ? '未知平台' : platform;
+  }
+
+  static String _typeLabel(String type) {
+    if (type == 'video') return '视频';
+    if (type == 'image') return '图集';
+    return type.isEmpty ? '未知类型' : type;
+  }
+
+  static List<MetricItem> _buildMetrics(Map<String, dynamic> stats) {
+    return [
+      MetricItem(label: '点赞', value: _formatMetric(stats['likes'])),
+      MetricItem(label: '评论', value: _formatMetric(stats['comments'])),
+      MetricItem(label: '收藏', value: _formatMetric(stats['collects'])),
+      MetricItem(label: '分享', value: _formatMetric(stats['shares'])),
+    ].where((item) => item.value != '--').toList();
+  }
+
+  static String _formatMetric(dynamic value) {
+    if (value == null || value == '') return '--';
+    final numeric = num.tryParse(value.toString());
+    if (numeric == null) return value.toString();
+    if (numeric >= 100000000) {
+      return '${(numeric / 100000000).toStringAsFixed(1)}亿';
+    }
+    if (numeric >= 10000) {
+      return '${(numeric / 10000).toStringAsFixed(1)}万';
+    }
+    return numeric.toStringAsFixed(0);
+  }
+}
+
+class MetricItem {
+  const MetricItem({required this.label, required this.value});
+
+  final String label;
+  final String value;
 }
 
 class ConversionTask {
