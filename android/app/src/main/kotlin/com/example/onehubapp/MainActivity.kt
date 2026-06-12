@@ -2,7 +2,9 @@ package com.example.onehubapp
 
 import android.app.ActivityManager
 import android.content.Context
+import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Environment
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -60,7 +62,38 @@ class MainActivity : FlutterActivity() {
                     ) { _, _ -> }
                     result.success(true)
                 }
+                "getVideoDurationMs" -> {
+                    val path = call.argument<String>("path")
+                    val identifier = call.argument<String>("identifier")
+                    val durationMs = readVideoDurationMs(path, identifier)
+                    if (durationMs == null) {
+                        result.error("duration_unavailable", "Unable to resolve video duration.", null)
+                    } else {
+                        result.success(durationMs)
+                    }
+                }
                 else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun readVideoDurationMs(path: String?, identifier: String?): Long? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            when {
+                !identifier.isNullOrBlank() -> retriever.setDataSource(applicationContext, Uri.parse(identifier))
+                !path.isNullOrBlank() -> retriever.setDataSource(path)
+                else -> return null
+            }
+
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()
+        } catch (_: Exception) {
+            null
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {
             }
         }
     }

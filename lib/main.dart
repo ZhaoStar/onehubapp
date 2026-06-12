@@ -919,14 +919,18 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
     'api.onehubai.online',
     '/api/v1/convert/tasks',
   );
+  static const MethodChannel _filesChannel = MethodChannel('onehubapp/files');
   static const int _chunkSize = 8 * 1024 * 1024;
   static const double _maxFileSize = 500 * 1024 * 1024;
 
   PlatformFile? _selectedFile;
+  final TextEditingController _startTimeController = TextEditingController();
+  final TextEditingController _endTimeController = TextEditingController();
   bool _isPickingFile = false;
   bool _isSubmitting = false;
   bool _isLoadingTasks = false;
   bool _isClearingHistory = false;
+  String? _downloadingTaskId;
   double _localProgress = 0;
   String? _submitHint;
   List<ConversionTask> _tasks = const [];
@@ -940,6 +944,8 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
 
   @override
   void dispose() {
+    _startTimeController.dispose();
+    _endTimeController.dispose();
     _pollTimer?.cancel();
     super.dispose();
   }
@@ -984,6 +990,8 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
         _selectedFile = file;
         _submitHint = null;
       });
+      await _applyDefaultTrimRange(file);
+      if (!mounted) return;
       AppMessage.show(
         context,
         '已选择 ${file.name}',
@@ -1031,6 +1039,16 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
     });
 
     try {
+      final trimValidation = _validateTrimRange(
+        _startTimeController.text,
+        _endTimeController.text,
+      );
+      if (!trimValidation.ok) {
+        throw FormatException(trimValidation.message!);
+      }
+
+      final startTime = _startTimeController.text.trim();
+      final endTime = _endTimeController.text.trim();
       final totalChunks = (file.size / _chunkSize).ceil();
       final uploadInit = await _initChunkUpload(
         accessToken: session.accessToken,
@@ -1078,11 +1096,15 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
       await _completeChunkUpload(
         accessToken: session.accessToken,
         uploadId: uploadId,
+        startTime: startTime.isEmpty ? null : startTime,
+        endTime: endTime.isEmpty ? null : endTime,
       );
 
       setState(() {
         _localProgress = 1;
         _selectedFile = null;
+        _startTimeController.clear();
+        _endTimeController.clear();
         _submitHint = '转换任务已创建，后台正在处理';
       });
       if (!mounted) return;
@@ -1104,6 +1126,26 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
           _localProgress = 0;
         });
       }
+    }
+  }
+
+  Future<void> _applyDefaultTrimRange(PlatformFile file) async {
+    try {
+      final durationMs = await _filesChannel.invokeMethod<int>(
+        'getVideoDurationMs',
+        {'path': file.path, 'identifier': file.identifier},
+      );
+      if (!mounted || durationMs == null || durationMs <= 0) {
+        _startTimeController.text = '00:00:00';
+        _endTimeController.clear();
+        return;
+      }
+
+      _startTimeController.text = '00:00:00';
+      _endTimeController.text = _formatDurationMs(durationMs);
+    } catch (_) {
+      _startTimeController.text = '00:00:00';
+      _endTimeController.clear();
     }
   }
 
@@ -1193,6 +1235,8 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
   Future<void> _completeChunkUpload({
     required String accessToken,
     required String uploadId,
+    String? startTime,
+    String? endTime,
   }) async {
     final client = HttpClient();
     try {
@@ -1209,8 +1253,10 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
           'bitrate': '192k',
           'sample_rate': 44100,
           'channels': 2,
-          'start_time': null,
-          'end_time': null,
+          'start_time': startTime?.trim().isEmpty ?? true
+              ? null
+              : startTime?.trim(),
+          'end_time': endTime?.trim().isEmpty ?? true ? null : endTime?.trim(),
         }),
       );
       final response = await request.close();
@@ -1354,12 +1400,116 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
   void _handleTaskAction(String action, ConversionTask task) {
     switch (action) {
       case 'download':
-        AppMessage.show(context, '下载功能下一步我可以继续帮你接上', type: AppMessageType.info);
+        _downloadTask(task);
         break;
       case 'delete':
         _deleteTask(task);
         break;
     }
+  }
+
+  Future<void> _downloadTask(ConversionTask task) async {
+    if (_downloadingTaskId != null) return;
+    final session = await AuthSession.restore();
+    if (session == null) {
+      if (!mounted) return;
+      AppMessage.show(context, '登录状态已失效，请重新登录', type: AppMessageType.warning);
+      return;
+    }
+
+    setState(() {
+      _downloadingTaskId = task.id;
+    });
+
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(
+        Uri.https('api.onehubai.online', '/api/v1/convert/download/${task.id}'),
+      );
+      request.headers.set(
+        HttpHeaders.authorizationHeader,
+        'Bearer ${session.accessToken}',
+      );
+      final response = await request.close();
+      if (response.statusCode != HttpStatus.ok) {
+        final body = await utf8.decoder.bind(response).join();
+        throw FormatException(_readApiMessage(body, fallback: '下载失败，请确认任务已完成'));
+      }
+
+      final fileName = _resolveMp3FileName(task, response);
+      final directory = await _resolvePublicDownloadDirectory();
+      await directory.create(recursive: true);
+      final file = File('${directory.path}\\$fileName');
+      final sink = file.openWrite();
+      await response.forEach(sink.add);
+      await sink.close();
+      if (Platform.isAndroid) {
+        await _filesChannel.invokeMethod('scanFile', {'path': file.path});
+      }
+
+      if (!mounted) return;
+      AppMessage.show(
+        context,
+        '已保存到 ${file.path}',
+        type: AppMessageType.success,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      final message = error is FormatException ? error.message : '下载失败，请稍后重试';
+      AppMessage.show(context, message, type: AppMessageType.error);
+    } finally {
+      client.close(force: true);
+      if (mounted) {
+        setState(() {
+          _downloadingTaskId = null;
+        });
+      }
+    }
+  }
+
+  Future<Directory> _resolvePublicDownloadDirectory() async {
+    if (Platform.isAndroid) {
+      final publicPath = await _filesChannel.invokeMethod<String>(
+        'getPublicDownloadsPath',
+      );
+      if (publicPath != null && publicPath.isNotEmpty) {
+        return Directory(publicPath);
+      }
+    }
+    final docsDir = await getApplicationDocumentsDirectory();
+    return Directory('${docsDir.path}\\downloads');
+  }
+
+  String _resolveMp3FileName(ConversionTask task, HttpClientResponse response) {
+    final contentDisposition =
+        response.headers.value('content-disposition') ?? '';
+    final utf8Match = RegExp(
+      r"filename\*=UTF-8''([^;]+)",
+      caseSensitive: false,
+    ).firstMatch(contentDisposition);
+    if (utf8Match != null) {
+      return _sanitizeFileName(Uri.decodeComponent(utf8Match.group(1) ?? ''));
+    }
+
+    final normalMatch = RegExp(
+      r'filename="?([^"]+)"?',
+      caseSensitive: false,
+    ).firstMatch(contentDisposition);
+    if (normalMatch != null && (normalMatch.group(1) ?? '').isNotEmpty) {
+      return _sanitizeFileName(normalMatch.group(1)!);
+    }
+
+    final baseName = task.outputFilename.isNotEmpty
+        ? task.outputFilename
+        : task.originalFilename;
+    final sanitized = _sanitizeFileName(baseName);
+    return sanitized.toLowerCase().endsWith('.mp3')
+        ? sanitized
+        : '$sanitized.mp3';
+  }
+
+  String _sanitizeFileName(String fileName) {
+    return fileName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
   }
 
   void _syncPolling(List<ConversionTask> tasks) {
@@ -1387,6 +1537,86 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
       return fallback;
     }
     return fallback;
+  }
+
+  _TrimValidationResult _validateTrimRange(String startTime, String endTime) {
+    final startSeconds = _parseTrimTime(startTime);
+    final endSeconds = _parseTrimTime(endTime);
+
+    if ((startSeconds?.isNaN ?? false) || (endSeconds?.isNaN ?? false)) {
+      return const _TrimValidationResult(
+        ok: false,
+        message: '截取时间格式不正确，请使用 SS、MM:SS 或 HH:MM:SS',
+      );
+    }
+
+    if (endSeconds != null && endSeconds <= 0) {
+      return const _TrimValidationResult(ok: false, message: '结束时间必须大于 0');
+    }
+
+    if (startSeconds != null &&
+        endSeconds != null &&
+        endSeconds <= startSeconds) {
+      return const _TrimValidationResult(ok: false, message: '结束时间必须大于开始时间');
+    }
+
+    return const _TrimValidationResult(ok: true);
+  }
+
+  double? _parseTrimTime(String value) {
+    final text = value.trim();
+    if (text.isEmpty) return null;
+
+    final parts = text.split(':');
+    if (parts.length > 3) return double.nan;
+    if (parts.any((part) => !RegExp(r'^\d+(\.\d+)?$').hasMatch(part))) {
+      return double.nan;
+    }
+
+    if (parts.length == 1) {
+      return double.tryParse(parts[0]) ?? double.nan;
+    }
+
+    if (parts.length == 2) {
+      final minutes = double.tryParse(parts[0]);
+      final seconds = double.tryParse(parts[1]);
+      if (minutes == null || seconds == null || seconds >= 60) {
+        return double.nan;
+      }
+      return minutes * 60 + seconds;
+    }
+
+    final hours = double.tryParse(parts[0]);
+    final minutes = double.tryParse(parts[1]);
+    final seconds = double.tryParse(parts[2]);
+    if (hours == null ||
+        minutes == null ||
+        seconds == null ||
+        minutes >= 60 ||
+        seconds >= 60) {
+      return double.nan;
+    }
+    return hours * 3600 + minutes * 60 + seconds;
+  }
+
+  String _formatDurationMs(int durationMs) {
+    final totalMilliseconds = durationMs;
+    final hours = totalMilliseconds ~/ 3600000;
+    final minutes = (totalMilliseconds % 3600000) ~/ 60000;
+    final seconds = (totalMilliseconds % 60000) ~/ 1000;
+    final milliseconds = totalMilliseconds % 1000;
+    final base = [
+      hours.toString().padLeft(2, '0'),
+      minutes.toString().padLeft(2, '0'),
+      seconds.toString().padLeft(2, '0'),
+    ].join(':');
+
+    if (milliseconds == 0) return base;
+    final fraction = milliseconds
+        .toString()
+        .padLeft(3, '0')
+        .replaceFirst(RegExp(r'0+$'), '');
+    return '$base.$fraction';
   }
 
   @override
@@ -1489,6 +1719,36 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
                       ),
                     ],
                     const SizedBox(height: 18),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _TrimTimeField(
+                            controller: _startTimeController,
+                            label: '开始时间',
+                            hintText: '00:00:00',
+                            enabled: !_isSubmitting,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _TrimTimeField(
+                            controller: _endTimeController,
+                            label: '结束时间',
+                            hintText: '00:00:30',
+                            enabled: !_isSubmitting,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      '可选，支持 SS、MM:SS、HH:MM:SS，只填开始时间表示从该位置截取到结尾',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 18),
                     SizedBox(
                       height: 68,
                       child: FilledButton.icon(
@@ -1558,6 +1818,7 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
                           child: _ConversionTaskCard(
                             task: task,
                             onAction: _handleTaskAction,
+                            isDownloading: _downloadingTaskId == task.id,
                           ),
                         ),
                       ),
@@ -1651,6 +1912,81 @@ class _VideoPickerPanel extends StatelessWidget {
   }
 }
 
+class _TrimTimeField extends StatelessWidget {
+  const _TrimTimeField({
+    required this.controller,
+    required this.label,
+    required this.hintText,
+    required this.enabled,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final String hintText;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: AppColors.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 52,
+          child: TextField(
+            controller: controller,
+            enabled: enabled,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(
+              hintText: hintText,
+              hintStyle: const TextStyle(
+                color: AppColors.placeholder,
+                fontSize: 15,
+              ),
+              filled: true,
+              fillColor: Colors.white,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 14,
+              ),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+                borderSide: const BorderSide(color: AppColors.border),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+                borderSide: const BorderSide(color: AppColors.border),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+                borderSide: const BorderSide(
+                  color: AppColors.primary,
+                  width: 1.5,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _TrimValidationResult {
+  const _TrimValidationResult({required this.ok, this.message});
+
+  final bool ok;
+  final String? message;
+}
+
 class _EmptyHistoryCard extends StatelessWidget {
   const _EmptyHistoryCard();
 
@@ -1690,10 +2026,15 @@ class _UploadInitResult {
 }
 
 class _ConversionTaskCard extends StatelessWidget {
-  const _ConversionTaskCard({required this.task, required this.onAction});
+  const _ConversionTaskCard({
+    required this.task,
+    required this.onAction,
+    required this.isDownloading,
+  });
 
   final ConversionTask task;
   final void Function(String action, ConversionTask task) onAction;
+  final bool isDownloading;
 
   @override
   Widget build(BuildContext context) {
@@ -1781,11 +2122,23 @@ class _ConversionTaskCard extends StatelessWidget {
           ),
           const SizedBox(width: 10),
           IconButton(
-            onPressed: () =>
-                onAction(task.isCompleted ? 'download' : 'delete', task),
-            icon: Icon(actionIcon, color: statusColor),
+            onPressed: isDownloading
+                ? null
+                : () =>
+                      onAction(task.isCompleted ? 'download' : 'delete', task),
+            icon: isDownloading
+                ? SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: statusColor,
+                    ),
+                  )
+                : Icon(actionIcon, color: statusColor),
           ),
           PopupMenuButton<String>(
+            enabled: !isDownloading,
             onSelected: (value) => onAction(value, task),
             itemBuilder: (context) => [
               if (task.isCompleted)
