@@ -1,4 +1,4 @@
-package com.example.onehubapp
+package online.onehubai.app
 
 import android.app.ActivityManager
 import android.content.Context

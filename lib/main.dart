@@ -7,9 +7,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:onehubapp/models/notification_model.dart';
+import 'package:onehubapp/pages/notifications_page.dart';
+import 'package:onehubapp/pages/todo_page.dart';
+import 'package:onehubapp/services/notification_service.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+
 
 void main() {
   runApp(const MyApp());
@@ -581,15 +586,137 @@ class WorkstationPage extends StatefulWidget {
 
 class _WorkstationPageState extends State<WorkstationPage> {
   int _selectedIndex = 0;
+  int _unreadNotificationCount = 0;
+  Timer? _reminderPollTimer;
+  final Set<int> _alertedNotificationIds = <int>{};
 
   @override
   void initState() {
     super.initState();
+    _checkNotifications();
+    _reminderPollTimer = Timer.periodic(
+      const Duration(seconds: 25),
+      (_) => _checkNotifications(),
+    );
   }
 
   @override
   void dispose() {
+    _reminderPollTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _checkNotifications() async {
+    try {
+      final unread = await NotificationService.getUnreadCount();
+      if (mounted) {
+        setState(() {
+          _unreadNotificationCount = unread;
+        });
+      }
+
+      final dues = await NotificationService.pollDueReminders();
+      if (!mounted) return;
+
+      for (final reminder in dues) {
+        if (!_alertedNotificationIds.contains(reminder.id)) {
+          _alertedNotificationIds.add(reminder.id);
+          _showDueReminderAlert(reminder);
+          break;
+        }
+      }
+    } catch (_) {}
+  }
+
+  void _showDueReminderAlert(AppNotificationItem reminder) {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.alarm_on_rounded, color: Color(0xFF4F46E5), size: 28),
+            SizedBox(width: 10),
+            Text(
+              '待办到期提醒',
+              style: TextStyle(
+                fontWeight: FontWeight.w800,
+                fontSize: 18,
+                color: AppColors.textPrimary,
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              reminder.content,
+              style: const TextStyle(
+                fontSize: 15,
+                color: AppColors.textPrimary,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF1F3FB),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.info_outline_rounded, size: 16, color: AppColors.placeholder),
+                  SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '已收到后台推送，可前往待办页面查看详情',
+                      style: TextStyle(fontSize: 12, color: AppColors.icon),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              NotificationService.markAsRead(reminder.id);
+              _checkNotifications();
+            },
+            child: const Text('我知道了', style: TextStyle(color: AppColors.icon)),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF4F46E5)),
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              NotificationService.markAsRead(reminder.id);
+              _checkNotifications();
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => TodoPage(username: widget.username),
+                ),
+              );
+            },
+            icon: const Icon(Icons.arrow_forward_rounded, size: 16),
+            label: const Text('查看待办'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openNotifications() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => NotificationsPage(username: widget.username),
+      ),
+    ).then((_) => _checkNotifications());
   }
 
   @override
@@ -599,7 +726,10 @@ class _WorkstationPageState extends State<WorkstationPage> {
       body: SafeArea(
         child: Column(
           children: [
-            const WorkstationTopBar(),
+            WorkstationTopBar(
+              unreadCount: _unreadNotificationCount,
+              onNotificationTap: _openNotifications,
+            ),
             Expanded(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.fromLTRB(22, 22, 22, 28),
@@ -618,7 +748,9 @@ class _WorkstationPageState extends State<WorkstationPage> {
           setState(() {
             _selectedIndex = index;
           });
-          if (index != 0) {
+          if (index == 2) {
+            _openNotifications();
+          } else if (index != 0) {
             _showPlaceholder(['Discovery', 'Messages', 'Profile'][index - 1]);
           }
         },
@@ -627,6 +759,14 @@ class _WorkstationPageState extends State<WorkstationPage> {
   }
 
   void _showPlaceholder(String feature) {
+    if (feature == '待办事项') {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => TodoPage(username: widget.username),
+        ),
+      );
+      return;
+    }
     if (feature == '视频转MP3') {
       Navigator.of(context).push(
         MaterialPageRoute<void>(
@@ -648,7 +788,14 @@ class _WorkstationPageState extends State<WorkstationPage> {
 }
 
 class WorkstationTopBar extends StatelessWidget {
-  const WorkstationTopBar({super.key});
+  const WorkstationTopBar({
+    this.unreadCount = 0,
+    this.onNotificationTap,
+    super.key,
+  });
+
+  final int unreadCount;
+  final VoidCallback? onNotificationTap;
 
   @override
   Widget build(BuildContext context) {
@@ -682,12 +829,43 @@ class WorkstationTopBar extends StatelessWidget {
             ),
           ),
           const Spacer(),
-          IconButton(
-            tooltip: '通知',
-            onPressed: () {
-              AppMessage.show(context, '暂无新通知', type: AppMessageType.info);
-            },
-            icon: const Icon(Icons.notifications_none_rounded, size: 28),
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              IconButton(
+                tooltip: '通知',
+                onPressed: onNotificationTap ??
+                    () {
+                      AppMessage.show(context, '暂无新通知', type: AppMessageType.info);
+                    },
+                icon: const Icon(Icons.notifications_none_rounded, size: 28),
+              ),
+              if (unreadCount > 0)
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: AppColors.error,
+                      shape: BoxShape.circle,
+                    ),
+                    constraints: const BoxConstraints(
+                      minWidth: 16,
+                      minHeight: 16,
+                    ),
+                    child: Text(
+                      unreadCount > 99 ? '99+' : '$unreadCount',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+            ],
           ),
         ],
       ),
@@ -701,6 +879,12 @@ class ServicesSection extends StatelessWidget {
   final ValueChanged<String> onServiceTap;
 
   static const _services = [
+    ServiceItem(
+      title: '待办事项',
+      subtitle: '任务规划、日程管理与到期提醒推送',
+      icon: Icons.checklist_rounded,
+      color: Color(0xFF4F46E5),
+    ),
     ServiceItem(
       title: '视频转MP3',
       subtitle: '快速提取视频音轨，支持批量处理',
@@ -726,6 +910,7 @@ class ServicesSection extends StatelessWidget {
       color: AppColors.primary,
     ),
   ];
+
 
   @override
   Widget build(BuildContext context) {
