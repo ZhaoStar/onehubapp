@@ -37,9 +37,9 @@ Write-Host "[1/4] 更新版本号为: $newVersionString" -ForegroundColor Yellow
 $newPubspec = $pubspecContent -replace 'version:\s*\d+\.\d+\.\d+\+\d+', "version: $newVersionString"
 Set-Content -Path $pubspecPath -Value $newPubspec -NoNewline
 
-# 2. 编译 Release APK
-Write-Host "[2/4] 开始编译 Release APK (flutter build apk --release)..." -ForegroundColor Yellow
-flutter build apk --release --build-name=$newVerName --build-number=$newCode
+# 2. 编译 Release APK (针对现代主流安卓如真我GT8等 64 位芯片，体积从 50MB 降至约 15MB)
+Write-Host "[2/4] 开始编译 64位专属 Release APK (flutter build apk --release --target-platform android-arm64)..." -ForegroundColor Yellow
+flutter build apk --release --target-platform android-arm64 --build-name=$newVerName --build-number=$newCode
 if ($LASTEXITCODE -ne 0) {
     Write-Host "编译失败，请检查错误日志！" -ForegroundColor Red
     exit 1

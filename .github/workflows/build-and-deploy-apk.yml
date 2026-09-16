@@ -38,8 +38,8 @@ jobs:
         run: |
           BUILD_NUM=${{ github.run_number }}
           VERSION_NAME="1.0.${BUILD_NUM}"
-          echo "Building APK version: ${VERSION_NAME}+${BUILD_NUM}"
-          flutter build apk --release --build-name="${VERSION_NAME}" --build-number="${BUILD_NUM}"
+          # 针对现代主流安卓手机 (如真我、小米、华为等 64 位芯片) 构建专属精简包，体积从 50MB 降至约 15MB
+          flutter build apk --release --target-platform android-arm64 --build-name="${VERSION_NAME}" --build-number="${BUILD_NUM}"
 
       - name: Prepare Release Artifacts and version.json
         run: |
