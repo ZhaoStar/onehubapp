@@ -60,6 +60,7 @@ class _LoginPageState extends State<LoginPage> {
     '/api/v1/auth/login',
   );
   static final Uri _meUri = Uri.https('api.onehubai.online', '/api/v1/auth/me');
+  static final http.Client _sharedHttpClient = http.Client();
 
   final _formKey = GlobalKey<FormState>();
   final _usernameController = TextEditingController();
@@ -94,7 +95,7 @@ class _LoginPageState extends State<LoginPage> {
     try {
       final session = await AuthSession.restore();
       if (session != null) {
-        final user = await _fetchMe(session.accessToken);
+        final user = await _fetchMe(session.accessToken).timeout(const Duration(seconds: 3));
         await AuthSession.save(session.accessToken, user);
         restored = true;
         if (!mounted) return;
@@ -141,6 +142,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _loadCaptcha({bool clearError = true}) async {
+    if (!mounted) return;
     setState(() {
       _isCaptchaLoading = true;
       if (clearError) {
@@ -148,21 +150,24 @@ class _LoginPageState extends State<LoginPage> {
       }
     });
 
-    final client = HttpClient();
     try {
-      final request = await client.getUrl(_captchaUri);
-      final response = await request.close();
-      final captchaKey = response.headers.value('x-captcha-key');
+      final response = await _sharedHttpClient.get(
+        _captchaUri,
+        headers: {
+          'User-Agent': 'OneHubApp/1.1.0 (Mobile; Android)',
+          'Accept': 'image/png',
+        },
+      ).timeout(const Duration(seconds: 6));
 
-      if (response.statusCode != HttpStatus.ok || captchaKey == null) {
+      final captchaKey = response.headers['x-captcha-key'];
+      if (response.statusCode != 200 || captchaKey == null) {
         throw const FormatException('验证码获取失败，请稍后重试');
       }
 
-      final bytes = await consolidateHttpClientResponseBytes(response);
       if (!mounted) return;
       setState(() {
         _captchaKey = captchaKey;
-        _captchaBytes = bytes;
+        _captchaBytes = response.bodyBytes;
         _captchaController.clear();
       });
     } catch (_) {
@@ -173,7 +178,6 @@ class _LoginPageState extends State<LoginPage> {
         _errorText = '验证码加载失败，请点击验证码区域重试';
       });
     } finally {
-      client.close(force: true);
       if (mounted) {
         setState(() {
           _isCaptchaLoading = false;
