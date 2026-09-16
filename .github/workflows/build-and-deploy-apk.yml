@@ -47,7 +47,8 @@ jobs:
           # 针对现代主流安卓手机 (如真我、小米、华为等 64 位芯片) 构建专属精简包，体积从 50MB 降至约 19MB
           flutter build apk --release --target-platform android-arm64 --build-name="${VERSION_NAME}" --build-number="${BUILD_NUM}"
 
-      - name: Prepare Release Artifacts and version.json
+      - name: Locate Release APK
+        id: apk_finder
         run: |
           RAW_VER=$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//')
           VERSION_NAME=$(echo "$RAW_VER" | cut -d'+' -f1)
@@ -56,9 +57,15 @@ jobs:
           if [ -z "$BUILD_NUM" ] || [ "$BUILD_NUM" -lt "$BASE_CODE" ]; then
             BUILD_NUM=$BASE_CODE
           fi
-          APK_SRC="build/app/outputs/flutter-apk/app-release.apk"
           
-          # 检查文件大小
+          # 自动定位生成的 release APK 路径
+          APK_SRC=$(find build/app/outputs -name "app-release.apk" -o -name "*-release.apk" | head -n 1)
+          echo "Found APK at: $APK_SRC"
+          if [ -z "$APK_SRC" ] || [ ! -f "$APK_SRC" ]; then
+            echo "Error: APK file not found!"
+            exit 1
+          fi
+
           FILE_BYTES=$(stat -c%s "$APK_SRC" 2>/dev/null || stat -f%z "$APK_SRC")
           FILE_SIZE_MB=$(echo "scale=1; $FILE_BYTES / 1048576" | bc)MB
           
@@ -68,44 +75,32 @@ jobs:
             COMMIT_LOG="日常优化与问题修复"
           fi
           
-          # 创建输出目录
-          mkdir -p release_dist
-          cp "$APK_SRC" release_dist/onehubapp-latest.apk
-          
-          # 生成供手机端读取的 version.json
-          cat <<EOF > release_dist/version.json
-          {
-            "versionCode": ${BUILD_NUM},
-            "versionName": "${VERSION_NAME}",
-            "minVersionCode": 1,
-            "downloadUrl": "https://api.onehubai.online/static/apk/onehubapp-latest.apk",
-            "fileSize": "${FILE_SIZE_MB}",
-            "updateLog": "${COMMIT_LOG}",
-            "publishDate": "$(date +'%Y-%m-%d %H:%M')",
-            "forceUpdate": false
-          }
-          EOF
-          
-          echo "Generated version.json:"
-          cat release_dist/version.json
+          echo "APK_PATH=$APK_SRC" >> $GITHUB_ENV
+          echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
+          echo "BUILD_NUM=$BUILD_NUM" >> $GITHUB_ENV
+          echo "FILE_SIZE_MB=$FILE_SIZE_MB" >> $GITHUB_ENV
+          echo "COMMIT_LOG=$COMMIT_LOG" >> $GITHUB_ENV
 
-      - name: Ensure target directory exists on server
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          port: ${{ secrets.SERVER_PORT || '22' }}
-          script: |
-            mkdir -p /root/onehubserver/static/apk/
-
-      - name: Upload APK and version.json to server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          port: ${{ secrets.SERVER_PORT || '22' }}
-          source: "release_dist/*"
-          target: "/root/onehubserver/static/apk/"
-          strip_components: 1
+      - name: Upload APK directly to OneHub Server via HTTPS API
+        run: |
+          echo "Uploading $FILE_SIZE_MB APK to https://api.onehubai.online/api/v1/app/version/upload..."
+          
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "https://api.onehubai.online/api/v1/app/version/upload" \
+            -F "file=@${APK_PATH}" \
+            -F "secret=onehub-apk-upload-secret-2026" \
+            -F "version_name=${VERSION_NAME}" \
+            -F "version_code=${BUILD_NUM}" \
+            -F "update_log=${COMMIT_LOG}")
+          
+          HTTP_BODY=$(echo "$RESPONSE" | sed '$d')
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n 1)
+          
+          echo "Upload HTTP Status: $HTTP_STATUS"
+          echo "Upload Response: $HTTP_BODY"
+          
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "Failed to upload APK to server, status code: $HTTP_STATUS"
+            exit 1
+          fi
+          
+          echo "Successfully published v${VERSION_NAME} (code: ${BUILD_NUM}) to OneHub server!"
