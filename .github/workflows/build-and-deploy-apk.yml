@@ -36,15 +36,26 @@ jobs:
 
       - name: Build Release APK
         run: |
+          RAW_VER=$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//')
+          VERSION_NAME=$(echo "$RAW_VER" | cut -d'+' -f1)
+          BASE_CODE=$(echo "$RAW_VER" | cut -d'+' -f2)
           BUILD_NUM=${{ github.run_number }}
-          VERSION_NAME="1.0.${BUILD_NUM}"
-          # 针对现代主流安卓手机 (如真我、小米、华为等 64 位芯片) 构建专属精简包，体积从 50MB 降至约 15MB
+          if [ -z "$BUILD_NUM" ] || [ "$BUILD_NUM" -lt "$BASE_CODE" ]; then
+            BUILD_NUM=$BASE_CODE
+          fi
+          echo "Building APK version: ${VERSION_NAME} (code: ${BUILD_NUM})"
+          # 针对现代主流安卓手机 (如真我、小米、华为等 64 位芯片) 构建专属精简包，体积从 50MB 降至约 19MB
           flutter build apk --release --target-platform android-arm64 --build-name="${VERSION_NAME}" --build-number="${BUILD_NUM}"
 
       - name: Prepare Release Artifacts and version.json
         run: |
+          RAW_VER=$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//')
+          VERSION_NAME=$(echo "$RAW_VER" | cut -d'+' -f1)
+          BASE_CODE=$(echo "$RAW_VER" | cut -d'+' -f2)
           BUILD_NUM=${{ github.run_number }}
-          VERSION_NAME="1.0.${BUILD_NUM}"
+          if [ -z "$BUILD_NUM" ] || [ "$BUILD_NUM" -lt "$BASE_CODE" ]; then
+            BUILD_NUM=$BASE_CODE
+          fi
           APK_SRC="build/app/outputs/flutter-apk/app-release.apk"
           
           # 检查文件大小
