@@ -202,6 +202,71 @@ class _TodoPageState extends State<TodoPage> with SingleTickerProviderStateMixin
     );
   }
 
+  void _openDetailSheet(TodoItem item) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _TodoDetailSheet(
+        item: item,
+        onToggle: () {
+          Navigator.of(ctx).pop();
+          _toggleStatus(item);
+        },
+        onEdit: () {
+          Navigator.of(ctx).pop();
+          _openAddOrEditModal(item);
+        },
+        onDelete: () {
+          Navigator.of(ctx).pop();
+          _deleteTodo(item);
+        },
+        onQuickReminder: () {
+          Navigator.of(ctx).pop();
+          _openQuickReminderSheet(item);
+        },
+      ),
+    );
+  }
+
+  void _openQuickReminderSheet(TodoItem item) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _QuickReminderSheet(
+        item: item,
+        onReminderChanged: (newTime) async {
+          try {
+            final updated = await TodoService.updateTodo(
+              id: item.id,
+              remindTime: newTime,
+              clearRemindTime: newTime == null,
+            );
+            if (!mounted) return;
+            setState(() {
+              final idx = _items.indexWhere((e) => e.id == item.id);
+              if (idx != -1) {
+                _items[idx] = updated;
+              }
+            });
+            _refreshStatsOnly();
+            AppMessage.show(
+              context,
+              newTime == null
+                  ? '已清除待办「${item.title}」的提醒时间'
+                  : '已设置提醒：${_formatDateTime(newTime)}',
+              type: AppMessageType.success,
+            );
+          } catch (e) {
+            if (!mounted) return;
+            AppMessage.show(context, '更新提醒失败: $e', type: AppMessageType.error);
+          }
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -458,44 +523,54 @@ class _TodoPageState extends State<TodoPage> with SingleTickerProviderStateMixin
         return _TodoCard(
           item: item,
           onToggle: () => _toggleStatus(item),
+          onOpenDetail: () => _openDetailSheet(item),
           onEdit: () => _openAddOrEditModal(item),
           onDelete: () => _deleteTodo(item),
+          onQuickReminder: () => _openQuickReminderSheet(item),
         );
       },
     );
   }
 }
 
+String _formatDateTime(DateTime dt) {
+  final local = dt.toLocal();
+  final y = local.year;
+  final m = local.month.toString().padLeft(2, '0');
+  final d = local.day.toString().padLeft(2, '0');
+  final h = local.hour.toString().padLeft(2, '0');
+  final min = local.minute.toString().padLeft(2, '0');
+  final now = DateTime.now();
+
+  if (local.year == now.year && local.month == now.month && local.day == now.day) {
+    return '今天 $h:$min';
+  }
+  final tomorrow = now.add(const Duration(days: 1));
+  if (local.year == tomorrow.year && local.month == tomorrow.month && local.day == tomorrow.day) {
+    return '明天 $h:$min';
+  }
+  if (local.year == now.year) {
+    return '$m-$d $h:$min';
+  }
+  return '$y-$m-$d $h:$min';
+}
+
 class _TodoCard extends StatelessWidget {
   const _TodoCard({
     required this.item,
     required this.onToggle,
+    required this.onOpenDetail,
     required this.onEdit,
     required this.onDelete,
+    required this.onQuickReminder,
   });
 
   final TodoItem item;
   final VoidCallback onToggle;
+  final VoidCallback onOpenDetail;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
-
-  String _formatDateTime(DateTime dt) {
-    final local = dt.toLocal();
-    final y = local.year;
-    final m = local.month.toString().padLeft(2, '0');
-    final d = local.day.toString().padLeft(2, '0');
-    final h = local.hour.toString().padLeft(2, '0');
-    final min = local.minute.toString().padLeft(2, '0');
-    final now = DateTime.now();
-
-    if (local.year == now.year && local.month == now.month && local.day == now.day) {
-      return '今天 $h:$min';
-    }
-    if (local.year == now.year) {
-      return '$m-$d $h:$min';
-    }
-    return '$y-$m-$d $h:$min';
-  }
+  final VoidCallback onQuickReminder;
 
   @override
   Widget build(BuildContext context) {
@@ -507,222 +582,899 @@ class _TodoCard extends StatelessWidget {
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isDone ? Colors.grey.shade200 : const Color(0xFFE5E9F2),
+          color: isDone ? const Color(0xFFF1F4F9) : const Color(0xFFE2E8F0),
+          width: 1,
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
+            color: const Color(0xFF0F172A).withValues(alpha: 0.04),
             blurRadius: 10,
-            offset: const Offset(0, 4),
+            offset: const Offset(0, 3),
           ),
         ],
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onOpenDetail,
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                GestureDetector(
-                  onTap: onToggle,
-                  child: Container(
-                    width: 26,
-                    height: 26,
-                    margin: const EdgeInsets.only(top: 2, right: 12),
-                    decoration: BoxDecoration(
-                      color: isDone ? AppColors.success : Colors.white,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: isDone ? AppColors.success : const Color(0xFFB0B7C6),
-                        width: 2,
-                      ),
-                    ),
-                    child: isDone
-                        ? const Icon(Icons.check, size: 16, color: Colors.white)
-                        : null,
-                  ),
-                ),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        item.title,
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: isDone ? AppColors.placeholder : AppColors.textPrimary,
-                          decoration: isDone ? TextDecoration.lineThrough : null,
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // 复选框
+                    GestureDetector(
+                      onTap: onToggle,
+                      behavior: HitTestBehavior.opaque,
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 2, right: 10),
+                        child: Container(
+                          width: 24,
+                          height: 24,
+                          decoration: BoxDecoration(
+                            color: isDone ? AppColors.success : Colors.white,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: isDone ? AppColors.success : const Color(0xFF94A3B8),
+                              width: 2,
+                            ),
+                          ),
+                          child: isDone
+                              ? const Icon(Icons.check, size: 15, color: Colors.white)
+                              : null,
                         ),
                       ),
-                      if (item.description != null && item.description!.isNotEmpty) ...[
-                        const SizedBox(height: 5),
-                        Text(
-                          item.description!,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: isDone ? Colors.grey.shade400 : AppColors.icon,
-                            height: 1.3,
+                    ),
+                    // 标题与说明
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            item.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: isDone ? AppColors.placeholder : AppColors.textPrimary,
+                              decoration: isDone ? TextDecoration.lineThrough : null,
+                              height: 1.3,
+                            ),
+                          ),
+                          if (item.description != null && item.description!.trim().isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              item.description!,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: isDone ? Colors.grey.shade400 : AppColors.icon,
+                                height: 1.3,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    // 精美编辑与删除按钮组
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Material(
+                          color: const Color(0xFFF0F7FF),
+                          borderRadius: BorderRadius.circular(8),
+                          child: InkWell(
+                            onTap: onEdit,
+                            borderRadius: BorderRadius.circular(8),
+                            child: const Tooltip(
+                              message: '编辑待办',
+                              child: SizedBox(
+                                width: 32,
+                                height: 32,
+                                child: Icon(Icons.edit_outlined, size: 16, color: Color(0xFF0284C7)),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Material(
+                          color: const Color(0xFFFEF2F2),
+                          borderRadius: BorderRadius.circular(8),
+                          child: InkWell(
+                            onTap: onDelete,
+                            borderRadius: BorderRadius.circular(8),
+                            child: const Tooltip(
+                              message: '删除待办',
+                              child: SizedBox(
+                                width: 32,
+                                height: 32,
+                                child: Icon(Icons.delete_outline_rounded, size: 16, color: Color(0xFFEF4444)),
+                              ),
+                            ),
                           ),
                         ),
                       ],
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-                PopupMenuButton<String>(
-                  tooltip: '操作',
-                  icon: const Icon(Icons.more_vert_rounded, color: AppColors.placeholder),
-                  onSelected: (val) {
-                    if (val == 'edit') onEdit();
-                    if (val == 'delete') onDelete();
-                  },
-                  itemBuilder: (ctx) => [
-                    const PopupMenuItem(
-                      value: 'edit',
-                      child: Row(
-                        children: [
-                          Icon(Icons.edit_outlined, size: 18, color: AppColors.primary),
-                          SizedBox(width: 8),
-                          Text('编辑'),
-                        ],
+                const SizedBox(height: 10),
+                // 标签栏与快捷设置
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    // 优先级标签
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: item.priority.backgroundColor,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        item.priority.label,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: item.priority.color,
+                        ),
                       ),
                     ),
-                    const PopupMenuItem(
-                      value: 'delete',
-                      child: Row(
-                        children: [
-                          Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.error),
-                          SizedBox(width: 8),
-                          Text('删除', style: TextStyle(color: AppColors.error)),
-                        ],
+                    // 提醒时间标签（支持点击直接快速修改）
+                    Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: onQuickReminder,
+                        borderRadius: BorderRadius.circular(6),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: item.remindTime != null
+                                ? (item.isReminded ? const Color(0xFFF1F2F6) : const Color(0xFFEEF2FF))
+                                : const Color(0xFFF8FAFC),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: item.remindTime != null
+                                  ? (item.isReminded ? const Color(0xFFDCDFE6) : const Color(0xFFC7D2FE))
+                                  : const Color(0xFFE2E8F0),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                item.remindTime != null
+                                    ? (item.isReminded
+                                        ? Icons.notifications_off_outlined
+                                        : Icons.notifications_active_rounded)
+                                    : Icons.add_alarm_rounded,
+                                size: 13,
+                                color: item.remindTime != null
+                                    ? (item.isReminded ? AppColors.placeholder : const Color(0xFF4F46E5))
+                                    : const Color(0xFF64748B),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                item.remindTime != null
+                                    ? '${_formatDateTime(item.remindTime!)} 提醒'
+                                    : '设置提醒',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: item.remindTime != null
+                                      ? (item.isReminded ? AppColors.placeholder : const Color(0xFF4F46E5))
+                                      : const Color(0xFF64748B),
+                                ),
+                              ),
+                              const SizedBox(width: 2),
+                              Icon(
+                                Icons.keyboard_arrow_down_rounded,
+                                size: 13,
+                                color: item.remindTime != null
+                                    ? (item.isReminded ? AppColors.placeholder : const Color(0xFF4F46E5))
+                                    : const Color(0xFF64748B),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
+                    // 截止时间标签
+                    if (item.dueTime != null)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: item.isOverdue ? const Color(0xFFFEE2E2) : const Color(0xFFF3F4F6),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              item.isOverdue ? Icons.warning_amber_rounded : Icons.schedule_rounded,
+                              size: 13,
+                              color: item.isOverdue ? AppColors.error : AppColors.icon,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              item.isOverdue
+                                  ? '超时: ${_formatDateTime(item.dueTime!)}'
+                                  : '截止: ${_formatDateTime(item.dueTime!)}',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: item.isOverdue ? FontWeight.w700 : FontWeight.w500,
+                                color: item.isOverdue ? AppColors.error : AppColors.icon,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                   ],
                 ),
               ],
             ),
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              crossAxisAlignment: WrapCrossAlignment.center,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TodoDetailSheet extends StatelessWidget {
+  const _TodoDetailSheet({
+    required this.item,
+    required this.onToggle,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onQuickReminder,
+  });
+
+  final TodoItem item;
+  final VoidCallback onToggle;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+  final VoidCallback onQuickReminder;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDone = item.isCompleted;
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE2E8F0),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            // 状态与操作栏
+            Row(
               children: [
-                // 优先级标签
+                // 状态徽章
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isDone ? const Color(0xFFDCFCE7) : const Color(0xFFEFF6FF),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        isDone ? Icons.check_circle_rounded : Icons.pending_actions_rounded,
+                        size: 14,
+                        color: isDone ? const Color(0xFF16A34A) : const Color(0xFF2563EB),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        isDone ? '已完成' : '进行中',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: isDone ? const Color(0xFF16A34A) : const Color(0xFF2563EB),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // 优先级
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     color: item.priority.backgroundColor,
-                    borderRadius: BorderRadius.circular(6),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    item.priority.label,
+                    '${item.priority.label}优先级',
                     style: TextStyle(
-                      fontSize: 11,
+                      fontSize: 12,
                       fontWeight: FontWeight.w700,
                       color: item.priority.color,
                     ),
                   ),
                 ),
-                // 提醒时间标签
-                if (item.remindTime != null)
+                if (item.isOverdue) ...[
+                  const SizedBox(width: 8),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
-                      color: item.isReminded
-                          ? const Color(0xFFF1F2F6)
-                          : const Color(0xFFEEF2FF),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                        color: item.isReminded
-                            ? const Color(0xFFDCDFE6)
-                            : const Color(0xFFC7D2FE),
+                      color: const Color(0xFFFEE2E2),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text(
+                      '已超时',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.error,
                       ),
                     ),
+                  ),
+                ],
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded, color: AppColors.placeholder),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // 待办标题
+            SelectableText(
+              item.title,
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+                color: isDone ? AppColors.placeholder : AppColors.textPrimary,
+                decoration: isDone ? TextDecoration.lineThrough : null,
+                height: 1.3,
+              ),
+            ),
+            // 描述
+            if (item.description != null && item.description!.trim().isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFEDF0F7)),
+                ),
+                child: SelectableText(
+                  item.description!,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: AppColors.textSecondary,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 16),
+            // 详情参数面板
+            Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFEDF0F7)),
+              ),
+              child: Column(
+                children: [
+                  // 提醒设置项
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                     child: Row(
-                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(
-                          item.isReminded
-                              ? Icons.notifications_off_outlined
-                              : Icons.notifications_active_rounded,
-                          size: 13,
-                          color: item.isReminded
-                              ? AppColors.placeholder
-                              : const Color(0xFF4F46E5),
+                        Container(
+                          width: 34,
+                          height: 34,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEEF2FF),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Center(
+                            child: Icon(Icons.notifications_active_rounded, size: 18, color: Color(0xFF4F46E5)),
+                          ),
                         ),
-                        const SizedBox(width: 4),
-                        Text(
-                          '${_formatDateTime(item.remindTime!)} 提醒',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: item.isReminded
-                                ? AppColors.placeholder
-                                : const Color(0xFF4F46E5),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('到期提醒', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+                              const SizedBox(height: 2),
+                              Text(
+                                item.remindTime != null
+                                    ? '${_formatDateTime(item.remindTime!)}${item.isReminded ? '（已推送）' : '（待提醒）'}'
+                                    : '未设置提醒时间',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: item.remindTime != null ? const Color(0xFF4F46E5) : AppColors.placeholder,
+                                  fontWeight: item.remindTime != null ? FontWeight.w600 : FontWeight.normal,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        FilledButton.tonal(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFFEEF2FF),
+                            foregroundColor: const Color(0xFF4F46E5),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          onPressed: onQuickReminder,
+                          child: Text(
+                            item.remindTime != null ? '修改提醒' : '设置提醒',
+                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
                           ),
                         ),
                       ],
                     ),
                   ),
-                // 截止时间标签
-                if (item.dueTime != null) ...[
-                  if (item.isOverdue)
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFEE2E2),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.warning_amber_rounded, size: 13, color: AppColors.error),
-                          const SizedBox(width: 4),
-                          Text(
-                            '超时: ${_formatDateTime(item.dueTime!)}',
-                            style: const TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.error,
+                  const Divider(height: 1, color: Color(0xFFEDF0F7)),
+                  // 截止时间项
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 34,
+                          height: 34,
+                          decoration: BoxDecoration(
+                            color: item.isOverdue
+                                ? const Color(0xFFFEE2E2)
+                                : const Color(0xFFF0F9FF),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Center(
+                            child: Icon(
+                              item.isOverdue ? Icons.warning_amber_rounded : Icons.schedule_rounded,
+                              size: 18,
+                              color: item.isOverdue ? AppColors.error : const Color(0xFF0284C7),
                             ),
                           ),
-                        ],
-                      ),
-                    )
-                  else
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF3F4F6),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.schedule_rounded, size: 13, color: AppColors.icon),
-                          const SizedBox(width: 4),
-                          Text(
-                            '截止: ${_formatDateTime(item.dueTime!)}',
-                            style: const TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w500,
-                              color: AppColors.icon,
-                            ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('截止日期', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+                              const SizedBox(height: 2),
+                              Text(
+                                item.dueTime != null
+                                    ? '${_formatDateTime(item.dueTime!)}${item.isOverdue ? '（已逾期）' : ''}'
+                                    : '未设置截止日期',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: item.isOverdue ? AppColors.error : AppColors.placeholder,
+                                  fontWeight: item.isOverdue ? FontWeight.w700 : FontWeight.normal,
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
+                  ),
+                  const Divider(height: 1, color: Color(0xFFEDF0F7)),
+                  // 时间记录
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          '创建时间：${_formatDateTime(item.createdAt)}',
+                          style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
+                        ),
+                        if (item.completedAt != null)
+                          Text(
+                            '完成时间：${_formatDateTime(item.completedAt!)}',
+                            style: const TextStyle(fontSize: 11, color: Color(0xFF16A34A)),
+                          ),
+                      ],
+                    ),
+                  ),
                 ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            // 底部操作区
+            Row(
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: SizedBox(
+                    height: 44,
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: isDone ? const Color(0xFF64748B) : AppColors.success,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      onPressed: onToggle,
+                      icon: Icon(isDone ? Icons.restart_alt_rounded : Icons.check_circle_outline_rounded, size: 18),
+                      label: Text(isDone ? '设为未完成' : '标记已完成', style: const TextStyle(fontWeight: FontWeight.w700)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  flex: 2,
+                  child: SizedBox(
+                    height: 44,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF0284C7),
+                        side: const BorderSide(color: Color(0xFFBAE6FD)),
+                        backgroundColor: const Color(0xFFF0F9FF),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      onPressed: onEdit,
+                      icon: const Icon(Icons.edit_outlined, size: 16),
+                      label: const Text('编辑', style: TextStyle(fontWeight: FontWeight.w700)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(
+                  height: 44,
+                  width: 44,
+                  child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.error,
+                      side: const BorderSide(color: Color(0xFFFECACA)),
+                      backgroundColor: const Color(0xFFFEF2F2),
+                      padding: EdgeInsets.zero,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    onPressed: onDelete,
+                    child: const Icon(Icons.delete_outline_rounded, size: 18),
+                  ),
+                ),
               ],
             ),
           ],
         ),
       ),
     );
+  }
+}
+
+class _QuickReminderSheet extends StatelessWidget {
+  const _QuickReminderSheet({
+    required this.item,
+    required this.onReminderChanged,
+  });
+
+  final TodoItem item;
+  final ValueChanged<DateTime?> onReminderChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final eveningTarget = DateTime(now.year, now.month, now.day, 18, 0);
+    final isEveningPast = now.isAfter(eveningTarget);
+    final eveningTime = isEveningPast
+        ? DateTime(now.year, now.month, now.day + 1, 18, 0)
+        : eveningTarget;
+    final morningTomorrow = DateTime(now.year, now.month, now.day + 1, 9, 0);
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE2E8F0),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEEF2FF),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Center(
+                    child: Icon(Icons.alarm_on_rounded, color: Color(0xFF4F46E5), size: 20),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '快速设置提醒时间',
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        item.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.placeholder,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded, color: AppColors.placeholder),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ],
+            ),
+            if (item.remindTime != null) ...[
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.notifications_active_outlined, size: 16, color: Color(0xFF4F46E5)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '当前提醒：${_formatDateTime(item.remindTime!)}',
+                        style: const TextStyle(fontSize: 13, color: AppColors.textPrimary),
+                      ),
+                    ),
+                    InkWell(
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        onReminderChanged(null);
+                      },
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        child: Text(
+                          '清除提醒',
+                          style: TextStyle(fontSize: 13, color: AppColors.error, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 16),
+            const Text(
+              '快捷预设',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.placeholder),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildPresetCard(
+                    context,
+                    title: '30分钟后',
+                    subtitle: _formatTimeOnly(now.add(const Duration(minutes: 30))),
+                    icon: Icons.flash_on_rounded,
+                    color: const Color(0xFFD97706),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      onReminderChanged(now.add(const Duration(minutes: 30)));
+                    },
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _buildPresetCard(
+                    context,
+                    title: '1小时后',
+                    subtitle: _formatTimeOnly(now.add(const Duration(hours: 1))),
+                    icon: Icons.timer_outlined,
+                    color: const Color(0xFF2563EB),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      onReminderChanged(now.add(const Duration(hours: 1)));
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildPresetCard(
+                    context,
+                    title: isEveningPast ? '明晚 18:00' : '今晚 18:00',
+                    subtitle: '18:00',
+                    icon: Icons.nightlight_round,
+                    color: const Color(0xFF7C3AED),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      onReminderChanged(eveningTime);
+                    },
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _buildPresetCard(
+                    context,
+                    title: '明天 09:00',
+                    subtitle: '明天 09:00',
+                    icon: Icons.wb_sunny_rounded,
+                    color: const Color(0xFF059669),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      onReminderChanged(morningTomorrow);
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            // 自定义时间按钮
+            SizedBox(
+              width: double.infinity,
+              height: 46,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  side: const BorderSide(color: Color(0xFFE2E8F0)),
+                ),
+                onPressed: () async {
+                  final initial = item.remindTime?.toLocal() ?? now.add(const Duration(hours: 1));
+                  final pickedDate = await showDatePicker(
+                    context: context,
+                    initialDate: initial,
+                    firstDate: now.subtract(const Duration(days: 1)),
+                    lastDate: now.add(const Duration(days: 365 * 2)),
+                  );
+                  if (pickedDate == null || !context.mounted) return;
+
+                  final pickedTime = await showTimePicker(
+                    context: context,
+                    initialTime: TimeOfDay(hour: initial.hour, minute: initial.minute),
+                  );
+                  if (pickedTime == null || !context.mounted) return;
+
+                  final picked = DateTime(
+                    pickedDate.year,
+                    pickedDate.month,
+                    pickedDate.day,
+                    pickedTime.hour,
+                    pickedTime.minute,
+                  );
+                  Navigator.of(context).pop();
+                  onReminderChanged(picked);
+                },
+                icon: const Icon(Icons.edit_calendar_rounded, size: 18),
+                label: const Text('自定义日期与时间', style: TextStyle(fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPresetCard(
+    BuildContext context, {
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: const Color(0xFFF8FAFC),
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFEDF0F7)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Center(
+                  child: Icon(icon, size: 16, color: color),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppColors.placeholder,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  static String _formatTimeOnly(DateTime dt) {
+    final h = dt.hour.toString().padLeft(2, '0');
+    final m = dt.minute.toString().padLeft(2, '0');
+    return '$h:$m';
   }
 }
 
@@ -826,6 +1578,8 @@ class _TodoEditSheetState extends State<_TodoEditSheet> {
           priority: _priority,
           dueTime: _dueTime,
           remindTime: _remindTime,
+          clearDueTime: _dueTime == null,
+          clearRemindTime: _remindTime == null,
         );
       }
 

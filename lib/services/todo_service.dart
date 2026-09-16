@@ -130,6 +130,8 @@ class TodoService {
     String? status,
     DateTime? dueTime,
     DateTime? remindTime,
+    bool clearDueTime = false,
+    bool clearRemindTime = false,
   }) async {
     final headers = await _authHeaders();
     final uri = AppConfig.uri('/api/v1/todos/$id');
@@ -138,8 +140,16 @@ class TodoService {
     if (description != null) payload['description'] = description;
     if (priority != null) payload['priority'] = priority.toApiString();
     if (status != null) payload['status'] = status;
-    if (dueTime != null) payload['due_time'] = dueTime.toUtc().toIso8601String();
-    if (remindTime != null) payload['remind_time'] = remindTime.toUtc().toIso8601String();
+    if (dueTime != null) {
+      payload['due_time'] = dueTime.toUtc().toIso8601String();
+    } else if (clearDueTime) {
+      payload['due_time'] = null;
+    }
+    if (remindTime != null) {
+      payload['remind_time'] = remindTime.toUtc().toIso8601String();
+    } else if (clearRemindTime) {
+      payload['remind_time'] = null;
+    }
 
     final response = await http.put(uri, headers: headers, body: jsonEncode(payload));
 

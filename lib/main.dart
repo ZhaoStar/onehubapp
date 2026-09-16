@@ -12,8 +12,11 @@ import 'package:onehubapp/core/app_message.dart';
 import 'package:onehubapp/core/auth_session.dart';
 import 'package:onehubapp/models/notification_model.dart';
 import 'package:onehubapp/pages/notifications_page.dart';
+import 'package:onehubapp/pages/oil_price_page.dart';
 import 'package:onehubapp/pages/todo_page.dart';
+import 'package:onehubapp/services/app_update_service.dart';
 import 'package:onehubapp/services/notification_service.dart';
+import 'package:onehubapp/widgets/update_dialog.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -608,6 +611,12 @@ class _WorkstationPageState extends State<WorkstationPage> {
       const Duration(seconds: 25),
       (_) => _checkNotifications(),
     );
+    // 进入工作台后延迟 1.5 秒静默检测在线新版本
+    Future.delayed(const Duration(milliseconds: 1500), () {
+      if (mounted) {
+        _checkAppUpdate(silent: true);
+      }
+    });
   }
 
   @override
@@ -736,6 +745,113 @@ class _WorkstationPageState extends State<WorkstationPage> {
     });
   }
 
+  Future<void> _checkAppUpdate({bool silent = false}) async {
+    final result = await AppUpdateService.checkUpdate();
+    if (!mounted) return;
+    if (result.hasUpdate && result.versionInfo != null) {
+      UpdateDialog.show(
+        context,
+        versionInfo: result.versionInfo!,
+        currentVersion: result.currentVersion,
+      );
+    } else if (!silent) {
+      AppMessage.show(
+        context,
+        '当前已是最新版本 (v${result.currentVersion}+${result.currentBuild})',
+        type: AppMessageType.success,
+      );
+    }
+  }
+
+  void _showProfileSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      backgroundColor: Colors.white,
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE2E8F0),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                CircleAvatar(
+                  radius: 30,
+                  backgroundColor: AppColors.primary.withValues(alpha: 0.1),
+                  child: Text(
+                    widget.username.isNotEmpty ? widget.username[0].toUpperCase() : 'U',
+                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: AppColors.primary),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  widget.username,
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'OneHub 移动客户端',
+                  style: TextStyle(fontSize: 12, color: AppColors.placeholder),
+                ),
+                const SizedBox(height: 20),
+                ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.system_update_alt_rounded, color: Color(0xFF2563EB), size: 20),
+                  ),
+                  title: const Text('检查新版本', style: TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: const Text('在线检测最新版本并一键升级', style: TextStyle(fontSize: 12, color: AppColors.placeholder)),
+                  trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: AppColors.placeholder),
+                  onTap: () {
+                    Navigator.of(ctx).pop();
+                    _checkAppUpdate(silent: false);
+                  },
+                ),
+                const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEE2E2),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.logout_rounded, color: AppColors.error, size: 20),
+                  ),
+                  title: const Text('退出登录', style: TextStyle(fontWeight: FontWeight.w600, color: AppColors.error)),
+                  onTap: () async {
+                    Navigator.of(ctx).pop();
+                    await AuthSession.clear();
+                    if (mounted) {
+                      Navigator.of(context).pushAndRemoveUntil(
+                        MaterialPageRoute<void>(builder: (_) => const LoginPage()),
+                        (route) => false,
+                      );
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   void _openNotifications() {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -754,6 +870,7 @@ class _WorkstationPageState extends State<WorkstationPage> {
             WorkstationTopBar(
               unreadCount: _unreadNotificationCount,
               onNotificationTap: _openNotifications,
+              onCheckUpdate: () => _checkAppUpdate(silent: false),
             ),
             Expanded(
               child: SingleChildScrollView(
@@ -775,6 +892,8 @@ class _WorkstationPageState extends State<WorkstationPage> {
           });
           if (index == 2) {
             _openNotifications();
+          } else if (index == 3) {
+            _showProfileSheet();
           } else if (index != 0) {
             _showPlaceholder(['Discovery', 'Messages', 'Profile'][index - 1]);
           }
@@ -808,17 +927,12 @@ class _WorkstationPageState extends State<WorkstationPage> {
       );
       return;
     }
-    if (feature == 'AI 配置') {
-      final uri = Uri.parse('https://hub.onehubai.online/');
-      launchUrl(uri, mode: LaunchMode.externalApplication).then((launched) {
-        if (!launched && mounted) {
-          AppMessage.show(context, '无法打开 AI 配置后台', type: AppMessageType.error);
-        }
-      }).catchError((_) {
-        if (mounted) {
-          AppMessage.show(context, '无法打开 AI 配置后台', type: AppMessageType.error);
-        }
-      });
+    if (feature == '油价查询') {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => OilPricePage(username: widget.username),
+        ),
+      );
       return;
     }
     AppMessage.show(context, '$feature 功能建设中', type: AppMessageType.info);
@@ -829,11 +943,13 @@ class WorkstationTopBar extends StatelessWidget {
   const WorkstationTopBar({
     this.unreadCount = 0,
     this.onNotificationTap,
+    this.onCheckUpdate,
     super.key,
   });
 
   final int unreadCount;
   final VoidCallback? onNotificationTap;
+  final VoidCallback? onCheckUpdate;
 
   @override
   Widget build(BuildContext context) {
@@ -868,6 +984,16 @@ class WorkstationTopBar extends StatelessWidget {
             ),
           ),
           const Spacer(),
+          IconButton(
+            tooltip: '检查新版本',
+            onPressed: onCheckUpdate,
+            icon: const Icon(
+              Icons.system_update_alt_rounded,
+              size: 22,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(width: 2),
           Stack(
             clipBehavior: Clip.none,
             children: [
@@ -937,22 +1063,10 @@ class ServicesSection extends StatelessWidget {
       color: Color(0xFF059669),
     ),
     ServiceItem(
-      title: 'AI 配置',
-      subtitle: '模型参数与 API 令牌',
-      icon: Icons.smart_toy_rounded,
-      color: Color(0xFF8B5CF6),
-    ),
-    ServiceItem(
       title: '油价查询',
       subtitle: '全国省市今日最新油价',
       icon: Icons.local_gas_station_rounded,
       color: Color(0xFFF59E0B),
-    ),
-    ServiceItem(
-      title: '用户管理',
-      subtitle: '权限设置与账号审计',
-      icon: Icons.manage_accounts_rounded,
-      color: Color(0xFF2563EB),
     ),
   ];
 
