@@ -7,12 +7,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:onehubapp/core/app_colors.dart';
+import 'package:onehubapp/core/app_message.dart';
+import 'package:onehubapp/core/auth_session.dart';
 import 'package:onehubapp/models/notification_model.dart';
 import 'package:onehubapp/pages/notifications_page.dart';
 import 'package:onehubapp/pages/todo_page.dart';
 import 'package:onehubapp/services/notification_service.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 
@@ -221,11 +223,13 @@ class _LoginPageState extends State<LoginPage> {
         if (accessToken == null || accessToken.isEmpty || user == null) {
           throw const FormatException('登录响应异常，请稍后重试');
         }
-        if (_rememberLogin) {
-          await AuthSession.save(accessToken, user);
-        } else {
-          await AuthSession.clear();
-        }
+        // 会话始终保存在内存中；「记住登录状态」只决定是否写入磁盘。
+        // 否则取消勾选后 token 无处可取，所有鉴权接口都会失败。
+        await AuthSession.start(
+          accessToken: accessToken,
+          user: user,
+          remember: _rememberLogin,
+        );
         if (!mounted) return;
         AppMessage.show(context, '登录成功，正在进入工作台', type: AppMessageType.success);
         await Future<void>.delayed(const Duration(milliseconds: 650));
@@ -590,6 +594,12 @@ class _WorkstationPageState extends State<WorkstationPage> {
   Timer? _reminderPollTimer;
   final Set<int> _alertedNotificationIds = <int>{};
 
+  /// 是否有到期提醒弹窗正在显示。
+  ///
+  /// 轮询每 25 秒触发一次，而弹窗是不可点击遮罩关闭的。
+  /// 若不加此保护，用户未及时处理时弹窗会不断叠加。
+  bool _isReminderDialogOpen = false;
+
   @override
   void initState() {
     super.initState();
@@ -618,17 +628,29 @@ class _WorkstationPageState extends State<WorkstationPage> {
       final dues = await NotificationService.pollDueReminders();
       if (!mounted) return;
 
+      // 已有弹窗未关闭时先不提示下一个，否则弹窗会不断叠加
+      if (_isReminderDialogOpen) return;
+
       for (final reminder in dues) {
         if (!_alertedNotificationIds.contains(reminder.id)) {
           _alertedNotificationIds.add(reminder.id);
+          // 防止长时间运行后集合无限增长
+          if (_alertedNotificationIds.length > 200) {
+            _alertedNotificationIds.remove(_alertedNotificationIds.first);
+          }
           _showDueReminderAlert(reminder);
           break;
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      // 后台轮询失败不打扰用户，仅记录日志便于排查
+      debugPrint('[Workstation] _checkNotifications failed: $e');
+    }
   }
 
   void _showDueReminderAlert(AppNotificationItem reminder) {
+    if (_isReminderDialogOpen) return;
+    _isReminderDialogOpen = true;
     showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -708,7 +730,10 @@ class _WorkstationPageState extends State<WorkstationPage> {
           ),
         ],
       ),
-    );
+    ).whenComplete(() {
+      // 弹窗关闭后解除保护，下一轮轮询可继续提示
+      _isReminderDialogOpen = false;
+    });
   }
 
   void _openNotifications() {
@@ -722,7 +747,7 @@ class _WorkstationPageState extends State<WorkstationPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: const Color(0xFFF8FAFC),
       body: SafeArea(
         child: Column(
           children: [
@@ -732,7 +757,7 @@ class _WorkstationPageState extends State<WorkstationPage> {
             ),
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(22, 22, 22, 28),
+                padding: const EdgeInsets.fromLTRB(18, 16, 18, 24),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [ServicesSection(onServiceTap: _showPlaceholder)],
@@ -783,6 +808,19 @@ class _WorkstationPageState extends State<WorkstationPage> {
       );
       return;
     }
+    if (feature == 'AI 配置') {
+      final uri = Uri.parse('https://hub.onehubai.online/');
+      launchUrl(uri, mode: LaunchMode.externalApplication).then((launched) {
+        if (!launched && mounted) {
+          AppMessage.show(context, '无法打开 AI 配置后台', type: AppMessageType.error);
+        }
+      }).catchError((_) {
+        if (mounted) {
+          AppMessage.show(context, '无法打开 AI 配置后台', type: AppMessageType.error);
+        }
+      });
+      return;
+    }
     AppMessage.show(context, '$feature 功能建设中', type: AppMessageType.info);
   }
 }
@@ -800,11 +838,11 @@ class WorkstationTopBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 88,
-      padding: const EdgeInsets.symmetric(horizontal: 24),
+      height: 60,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
       decoration: const BoxDecoration(
-        color: AppColors.background,
-        border: Border(bottom: BorderSide(color: AppColors.border)),
+        color: Colors.white,
+        border: Border(bottom: BorderSide(color: Color(0xFFEDF0F7), width: 1)),
       ),
       child: Row(
         children: [
@@ -816,16 +854,17 @@ class WorkstationTopBar extends StatelessWidget {
             icon: const Icon(
               Icons.menu_rounded,
               color: AppColors.primary,
-              size: 28,
+              size: 24,
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 4),
           const Text(
             'OneHub',
             style: TextStyle(
               color: AppColors.primary,
-              fontSize: 28,
+              fontSize: 22,
               fontWeight: FontWeight.w800,
+              letterSpacing: -0.3,
             ),
           ),
           const Spacer(),
@@ -838,17 +877,17 @@ class WorkstationTopBar extends StatelessWidget {
                     () {
                       AppMessage.show(context, '暂无新通知', type: AppMessageType.info);
                     },
-                icon: const Icon(Icons.notifications_none_rounded, size: 28),
+                icon: const Icon(Icons.notifications_none_rounded, size: 24, color: AppColors.textPrimary),
               ),
               if (unreadCount > 0)
                 Positioned(
-                  top: 8,
-                  right: 8,
+                  top: 6,
+                  right: 6,
                   child: Container(
-                    padding: const EdgeInsets.all(4),
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                     decoration: const BoxDecoration(
                       color: AppColors.error,
-                      shape: BoxShape.circle,
+                      borderRadius: BorderRadius.all(Radius.circular(10)),
                     ),
                     constraints: const BoxConstraints(
                       minWidth: 16,
@@ -881,36 +920,41 @@ class ServicesSection extends StatelessWidget {
   static const _services = [
     ServiceItem(
       title: '待办事项',
-      subtitle: '任务规划、日程管理与到期提醒推送',
+      subtitle: '任务规划与到期提醒',
       icon: Icons.checklist_rounded,
       color: Color(0xFF4F46E5),
     ),
     ServiceItem(
       title: '视频转MP3',
-      subtitle: '快速提取视频音轨，支持批量处理',
-      icon: Icons.video_library_outlined,
-      color: AppColors.primary,
+      subtitle: '音轨提取与格式转换',
+      icon: Icons.video_library_rounded,
+      color: Color(0xFF0284C7),
     ),
     ServiceItem(
       title: '抖音下载',
-      subtitle: '无水印视频高速解析与下载工具',
-      icon: Icons.download_rounded,
-      color: AppColors.success,
+      subtitle: '无水印视频解析提取',
+      icon: Icons.file_download_rounded,
+      color: Color(0xFF059669),
     ),
     ServiceItem(
       title: 'AI 配置',
-      subtitle: '管理模型参数与 API 访问令牌',
-      icon: Icons.smart_toy_outlined,
-      color: AppColors.neutralIcon,
+      subtitle: '模型参数与 API 令牌',
+      icon: Icons.smart_toy_rounded,
+      color: Color(0xFF8B5CF6),
+    ),
+    ServiceItem(
+      title: '油价查询',
+      subtitle: '全国省市今日最新油价',
+      icon: Icons.local_gas_station_rounded,
+      color: Color(0xFFF59E0B),
     ),
     ServiceItem(
       title: '用户管理',
-      subtitle: '权限设置、活动日志与账号审计',
-      icon: Icons.manage_accounts_outlined,
-      color: AppColors.primary,
+      subtitle: '权限设置与账号审计',
+      icon: Icons.manage_accounts_rounded,
+      color: Color(0xFF2563EB),
     ),
   ];
-
 
   @override
   Widget build(BuildContext context) {
@@ -918,33 +962,58 @@ class ServicesSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            const Expanded(
-              child: Text(
-                '服务列表',
-                style: TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.w900,
-                  color: AppColors.textPrimary,
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '服务列表',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.textPrimary,
+                    letterSpacing: -0.3,
+                  ),
                 ),
-              ),
+                const SizedBox(height: 2),
+                Text(
+                  '共 ${_services.length} 项集成服务',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF94A3B8),
+                  ),
+                ),
+              ],
             ),
-            TextButton(
+            TextButton.icon(
               onPressed: () => onServiceTap('全部服务'),
-              child: const Text('查看全部'),
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.primary,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              iconAlignment: IconAlignment.end,
+              icon: const Icon(Icons.arrow_forward_ios_rounded, size: 12),
+              label: const Text(
+                '查看全部',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              ),
             ),
           ],
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 14),
         GridView.builder(
           itemCount: _services.length,
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: 2,
-            mainAxisSpacing: 22,
-            crossAxisSpacing: 22,
-            childAspectRatio: 0.82,
+            mainAxisSpacing: 14,
+            crossAxisSpacing: 14,
+            childAspectRatio: 1.08,
           ),
           itemBuilder: (context, index) {
             final service = _services[index];
@@ -967,57 +1036,94 @@ class ServiceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          padding: const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: AppColors.border, width: 1.2),
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFEDF0F7), width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF0F172A).withValues(alpha: 0.04),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: 70,
-                    height: 70,
-                    decoration: BoxDecoration(
-                      color: service.color.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(16),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(16),
+          splashColor: service.color.withValues(alpha: 0.1),
+          highlightColor: service.color.withValues(alpha: 0.05),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 46,
+                      height: 46,
+                      decoration: BoxDecoration(
+                        color: service.color.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Center(
+                        child: Icon(service.icon, color: service.color, size: 24),
+                      ),
                     ),
-                    child: Center(
-                      child: Icon(service.icon, color: service.color, size: 30),
+                    Container(
+                      width: 24,
+                      height: 24,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFF8FAFC),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Center(
+                        child: Icon(
+                          Icons.arrow_forward_ios_rounded,
+                          color: Color(0xFF94A3B8),
+                          size: 11,
+                        ),
+                      ),
                     ),
-                  ),
-                  const Spacer(),
-                  const Icon(
-                    Icons.arrow_forward_ios_rounded,
-                    color: AppColors.icon,
-                    size: 22,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 22),
-              Text(
-                service.title,
-                maxLines: 2,
-                overflow: TextOverflow.fade,
-                style: const TextStyle(
-                  fontSize: 18,
-                  height: 1.15,
-                  fontWeight: FontWeight.w900,
-                  color: AppColors.textPrimary,
+                  ],
                 ),
-              ),
-              const Spacer(),
-            ],
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      service.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary,
+                        letterSpacing: -0.2,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      service.subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF94A3B8),
+                        height: 1.2,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -1037,37 +1143,44 @@ class WorkstationBottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return NavigationBar(
-      selectedIndex: selectedIndex,
-      onDestinationSelected: onChanged,
-      backgroundColor: Colors.white,
-      indicatorColor: AppColors.primary,
-      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-      destinations: const [
-        NavigationDestination(
-          selectedIcon: Icon(
-            Icons.home_repair_service_rounded,
-            color: Colors.white,
+    return Container(
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        border: Border(top: BorderSide(color: Color(0xFFEDF0F7), width: 1)),
+      ),
+      child: NavigationBar(
+        selectedIndex: selectedIndex,
+        onDestinationSelected: onChanged,
+        backgroundColor: Colors.white,
+        elevation: 0,
+        indicatorColor: AppColors.primary,
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        destinations: const [
+          NavigationDestination(
+            selectedIcon: Icon(
+              Icons.home_repair_service_rounded,
+              color: Colors.white,
+            ),
+            icon: Icon(Icons.home_repair_service_outlined),
+            label: '主页',
           ),
-          icon: Icon(Icons.home_repair_service_outlined),
-          label: '主页',
-        ),
-        NavigationDestination(
-          selectedIcon: Icon(Icons.explore_rounded, color: Colors.white),
-          icon: Icon(Icons.explore_outlined),
-          label: '发现',
-        ),
-        NavigationDestination(
-          selectedIcon: Icon(Icons.message_rounded, color: Colors.white),
-          icon: Icon(Icons.message_outlined),
-          label: '消息',
-        ),
-        NavigationDestination(
-          selectedIcon: Icon(Icons.person_rounded, color: Colors.white),
-          icon: Icon(Icons.person_outline_rounded),
-          label: '个人中心',
-        ),
-      ],
+          NavigationDestination(
+            selectedIcon: Icon(Icons.explore_rounded, color: Colors.white),
+            icon: Icon(Icons.explore_outlined),
+            label: '发现',
+          ),
+          NavigationDestination(
+            selectedIcon: Icon(Icons.message_rounded, color: Colors.white),
+            icon: Icon(Icons.message_outlined),
+            label: '消息',
+          ),
+          NavigationDestination(
+            selectedIcon: Icon(Icons.person_rounded, color: Colors.white),
+            icon: Icon(Icons.person_outline_rounded),
+            label: '个人中心',
+          ),
+        ],
+      ),
     );
   }
 }
@@ -3907,184 +4020,4 @@ class AppInputDecoration {
       ),
     );
   }
-}
-
-class AuthSession {
-  const AuthSession._();
-
-  static const _accessTokenKey = 'access_token';
-  static const _userKey = 'user';
-
-  static Future<AuthSessionData?> restore() async {
-    final prefs = await SharedPreferences.getInstance();
-    final accessToken = prefs.getString(_accessTokenKey);
-    final rawUser = prefs.getString(_userKey);
-    if (accessToken == null || accessToken.isEmpty || rawUser == null) {
-      return null;
-    }
-
-    try {
-      final user = jsonDecode(rawUser) as Map<String, dynamic>;
-      return AuthSessionData(accessToken: accessToken, user: user);
-    } catch (_) {
-      await clear();
-      return null;
-    }
-  }
-
-  static Future<void> save(
-    String accessToken,
-    Map<String, dynamic> user,
-  ) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_accessTokenKey, accessToken);
-    await prefs.setString(_userKey, jsonEncode(user));
-  }
-
-  static Future<void> clear() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_accessTokenKey);
-    await prefs.remove(_userKey);
-  }
-}
-
-class AuthSessionData {
-  const AuthSessionData({required this.accessToken, required this.user});
-
-  final String accessToken;
-  final Map<String, dynamic> user;
-}
-
-enum AppMessageType { success, error, warning, info }
-
-class AppMessage {
-  const AppMessage._();
-
-  static void show(
-    BuildContext context,
-    String message, {
-    AppMessageType type = AppMessageType.info,
-  }) {
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.hideCurrentSnackBar();
-    messenger.showSnackBar(
-      SnackBar(
-        behavior: SnackBarBehavior.floating,
-        elevation: 0,
-        backgroundColor: Colors.transparent,
-        duration: const Duration(milliseconds: 2200),
-        margin: const EdgeInsets.fromLTRB(18, 12, 18, 0),
-        padding: EdgeInsets.zero,
-        dismissDirection: DismissDirection.up,
-        content: AppMessageView(message: message, type: type),
-      ),
-    );
-  }
-}
-
-class AppMessageView extends StatelessWidget {
-  const AppMessageView({required this.message, required this.type, super.key});
-
-  final String message;
-  final AppMessageType type;
-
-  @override
-  Widget build(BuildContext context) {
-    final style = _styleFor(type);
-    return SafeArea(
-      bottom: false,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-        decoration: BoxDecoration(
-          color: style.background,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: style.border),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.12),
-              blurRadius: 18,
-              offset: const Offset(0, 8),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Icon(style.icon, color: style.foreground, size: 22),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                message,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: style.foreground,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  _MessageStyle _styleFor(AppMessageType type) {
-    return switch (type) {
-      AppMessageType.success => const _MessageStyle(
-        icon: Icons.check_circle_rounded,
-        foreground: Color(0xFF126B35),
-        background: Color(0xFFEAF8EF),
-        border: Color(0xFFB7E6C6),
-      ),
-      AppMessageType.error => const _MessageStyle(
-        icon: Icons.error_rounded,
-        foreground: Color(0xFF9D1E1E),
-        background: Color(0xFFFDECEC),
-        border: Color(0xFFF4B9B9),
-      ),
-      AppMessageType.warning => const _MessageStyle(
-        icon: Icons.info_rounded,
-        foreground: Color(0xFF855500),
-        background: Color(0xFFFFF5DE),
-        border: Color(0xFFF2D28D),
-      ),
-      AppMessageType.info => const _MessageStyle(
-        icon: Icons.info_rounded,
-        foreground: AppColors.primary,
-        background: Color(0xFFEAF3FF),
-        border: Color(0xFFBBD5F5),
-      ),
-    };
-  }
-}
-
-class _MessageStyle {
-  const _MessageStyle({
-    required this.icon,
-    required this.foreground,
-    required this.background,
-    required this.border,
-  });
-
-  final IconData icon;
-  final Color foreground;
-  final Color background;
-  final Color border;
-}
-
-class AppColors {
-  const AppColors._();
-
-  static const Color primary = Color(0xFF0666C8);
-  static const Color success = Color(0xFF088A37);
-  static const Color neutralIcon = Color(0xFFDDDEE4);
-  static const Color background = Color(0xFFFFFAFF);
-  static const Color captchaBackground = Color(0xFFF0EEF3);
-  static const Color border = Color(0xFFC1C9DC);
-  static const Color textPrimary = Color(0xFF1D1D24);
-  static const Color textSecondary = Color(0xFF2E3445);
-  static const Color placeholder = Color(0xFFA2A9B7);
-  static const Color icon = Color(0xFF747C8D);
-  static const Color error = Color(0xFFD13B3B);
 }

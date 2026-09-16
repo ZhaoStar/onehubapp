@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
+import 'package:onehubapp/core/api_error.dart';
 import 'package:onehubapp/core/app_config.dart';
 import 'package:onehubapp/core/auth_session.dart';
 import 'package:onehubapp/models/todo_model.dart';
@@ -24,7 +25,7 @@ class TodoService {
   static Future<Map<String, String>> _authHeaders() async {
     final session = await AuthSession.restore();
     if (session == null) {
-      throw const FormatException('未登录或登录态已失效，请重新登录');
+      throw kUnauthorizedException;
     }
     return {
       HttpHeaders.authorizationHeader: 'Bearer ${session.accessToken}',
@@ -69,9 +70,9 @@ class TodoService {
       return TodoListResult(total: total, items: items, stats: stats);
     }
 
-    throw HttpException(
-      '获取待办列表失败: ${response.statusCode}',
-      uri: uri,
+    throw ApiException(
+      describeHttpStatus(response.statusCode),
+      statusCode: response.statusCode,
     );
   }
 
@@ -85,7 +86,10 @@ class TodoService {
       return TodoStats.fromJson(data);
     }
 
-    throw HttpException('获取待办统计失败: ${response.statusCode}', uri: uri);
+    throw ApiException(
+      describeHttpStatus(response.statusCode),
+      statusCode: response.statusCode,
+    );
   }
 
   static Future<TodoItem> createTodo({
@@ -112,7 +116,10 @@ class TodoService {
       return TodoItem.fromJson(data);
     }
 
-    throw HttpException('创建待办失败: ${response.statusCode}', uri: uri);
+    throw ApiException(
+      describeHttpStatus(response.statusCode),
+      statusCode: response.statusCode,
+    );
   }
 
   static Future<TodoItem> updateTodo({
@@ -141,7 +148,10 @@ class TodoService {
       return TodoItem.fromJson(data);
     }
 
-    throw HttpException('更新待办失败: ${response.statusCode}', uri: uri);
+    throw ApiException(
+      describeHttpStatus(response.statusCode),
+      statusCode: response.statusCode,
+    );
   }
 
   static Future<TodoItem> toggleStatus(int id) async {
@@ -154,7 +164,10 @@ class TodoService {
       return TodoItem.fromJson(data);
     }
 
-    throw HttpException('切换状态失败: ${response.statusCode}', uri: uri);
+    throw ApiException(
+      describeHttpStatus(response.statusCode),
+      statusCode: response.statusCode,
+    );
   }
 
   static Future<void> deleteTodo(int id) async {
@@ -163,7 +176,10 @@ class TodoService {
     final response = await http.delete(uri, headers: headers);
 
     if (response.statusCode != HttpStatus.noContent && response.statusCode != HttpStatus.ok) {
-      throw HttpException('删除待办失败: ${response.statusCode}', uri: uri);
+      throw ApiException(
+      describeHttpStatus(response.statusCode),
+      statusCode: response.statusCode,
+    );
     }
   }
 
@@ -176,7 +192,10 @@ class TodoService {
       final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       return (data['count'] as int?) ?? 0;
     }
-    throw HttpException('清空已完成待办失败: ${response.statusCode}', uri: uri);
+    throw ApiException(
+      describeHttpStatus(response.statusCode),
+      statusCode: response.statusCode,
+    );
   }
 }
 

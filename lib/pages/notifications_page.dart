@@ -57,7 +57,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
           if (_unreadCount > 0) _unreadCount--;
         }
       });
-    } catch (_) {}
+    } catch (e) {
+      if (!mounted) return;
+      AppMessage.show(context, '标记已读失败: $e', type: AppMessageType.error);
+    }
   }
 
   Future<void> _markAllRead() async {

@@ -112,7 +112,10 @@ class _TodoPageState extends State<TodoPage> with SingleTickerProviderStateMixin
           _stats = stats;
         });
       }
-    } catch (_) {}
+    } catch (e) {
+      // 后台刷新失败不打扰用户，仅记录日志便于排查
+      debugPrint('[TodoPage] _refreshStatsOnly failed: $e');
+    }
   }
 
   Future<void> _deleteTodo(TodoItem item) async {

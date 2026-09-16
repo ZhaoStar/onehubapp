@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:onehubapp/core/api_error.dart';
 import 'package:onehubapp/core/app_config.dart';
 import 'package:onehubapp/core/auth_session.dart';
 import 'package:onehubapp/models/notification_model.dart';
@@ -24,7 +26,7 @@ class NotificationService {
   static Future<Map<String, String>> _authHeaders() async {
     final session = await AuthSession.restore();
     if (session == null) {
-      throw const FormatException('未登录或登录态已失效，请重新登录');
+      throw kUnauthorizedException;
     }
     return {
       HttpHeaders.authorizationHeader: 'Bearer ${session.accessToken}',
@@ -65,7 +67,10 @@ class NotificationService {
       );
     }
 
-    throw HttpException('获取通知列表失败: ${response.statusCode}', uri: uri);
+    throw ApiException(
+      describeHttpStatus(response.statusCode),
+      statusCode: response.statusCode,
+    );
   }
 
   static Future<int> getUnreadCount() async {
@@ -78,7 +83,12 @@ class NotificationService {
         final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
         return (data['unread_count'] as int?) ?? 0;
       }
-    } catch (_) {}
+      debugPrint(
+        '[NotificationService] getUnreadCount: HTTP ${response.statusCode}',
+      );
+    } catch (e) {
+      debugPrint('[NotificationService] getUnreadCount failed: $e');
+    }
     return 0;
   }
 
@@ -97,7 +107,12 @@ class NotificationService {
             .map((e) => AppNotificationItem.fromJson(e as Map<String, dynamic>))
             .toList();
       }
-    } catch (_) {}
+      debugPrint(
+        '[NotificationService] pollDueReminders: HTTP ${response.statusCode}',
+      );
+    } catch (e) {
+      debugPrint('[NotificationService] pollDueReminders failed: $e');
+    }
     return const [];
   }
 
@@ -107,7 +122,10 @@ class NotificationService {
     final response = await http.patch(uri, headers: headers);
 
     if (response.statusCode != HttpStatus.ok) {
-      throw HttpException('标记已读失败: ${response.statusCode}', uri: uri);
+      throw ApiException(
+      describeHttpStatus(response.statusCode),
+      statusCode: response.statusCode,
+    );
     }
   }
 
@@ -117,7 +135,10 @@ class NotificationService {
     final response = await http.post(uri, headers: headers);
 
     if (response.statusCode != HttpStatus.ok) {
-      throw HttpException('全部标记已读失败: ${response.statusCode}', uri: uri);
+      throw ApiException(
+      describeHttpStatus(response.statusCode),
+      statusCode: response.statusCode,
+    );
     }
   }
 }
