@@ -2,10 +2,13 @@ package online.onehubai.app
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
 import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -15,6 +18,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val SYSTEM_METRICS_CHANNEL = "onehubapp/system_metrics"
         private const val FILES_CHANNEL = "onehubapp/files"
+        private const val INSTALLER_CHANNEL = "onehubapp/installer"
     }
 
     private var lastCpuSnapshot: CpuSnapshot? = null
@@ -71,6 +75,37 @@ class MainActivity : FlutterActivity() {
                     } else {
                         result.success(durationMs)
                     }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            INSTALLER_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "canRequestPackageInstalls" -> {
+                    // Android 8.0 起安装 APK 需要用户手动开启「安装未知应用」，否则安装器会被静默拦截
+                    val allowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+                        packageManager.canRequestPackageInstalls()
+                    result.success(allowed)
+                }
+                "openInstallPermissionSettings" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        try {
+                            startActivity(
+                                Intent(
+                                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    Uri.parse("package:$packageName")
+                                )
+                            )
+                        } catch (e: Exception) {
+                            result.error("settings_unavailable", "无法打开安装权限设置页", e.message)
+                            return@setMethodCallHandler
+                        }
+                    }
+                    result.success(true)
                 }
                 else -> result.notImplemented()
             }
