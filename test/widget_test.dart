@@ -12,7 +12,8 @@ void main() {
     FlutterSecureStorage.setMockInitialValues({});
 
     await tester.pumpWidget(const MyApp());
-    await tester.pump();
+    // 全 App 启用了 zh_CN 本地化，本地化数据是异步加载的，需要等首帧渲染完成
+    await tester.pumpAndSettle();
 
     expect(find.byType(LoginPage), findsOneWidget);
     expect(find.byType(TextFormField), findsNWidgets(3));
