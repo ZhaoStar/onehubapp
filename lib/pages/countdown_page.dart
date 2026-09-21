@@ -1004,13 +1004,14 @@ class _CountdownEditSheetState extends State<_CountdownEditSheet> {
     final dateLabel =
         '${CountdownDateUtils.format(_targetDate)}（${CountdownDateUtils.weekdayLabel(_targetDate)}）';
 
-    return Container(
-      padding: EdgeInsets.fromLTRB(20, 16, 20, bottomInset + 20),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
+    // 用 Material 而不是带背景色的 Container 作根节点：
+    // ListTile 的水波纹要画在最近的 Material 上，被 DecoratedBox 挡住时新版 Flutter 会直接断言报错
+    return Material(
+      color: Colors.white,
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      clipBehavior: Clip.antiAlias,
       child: SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(20, 16, 20, bottomInset + 20),
         child: Form(
           key: _formKey,
           child: Column(
