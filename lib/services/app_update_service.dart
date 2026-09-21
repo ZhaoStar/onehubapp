@@ -222,6 +222,24 @@ class AppUpdateService {
     }
   }
 
+  /// 检查待安装 APK 与本机已安装版本的签名是否一致
+  ///
+  /// Android 只允许相同签名的安装包覆盖升级，签名不同时系统安装器只会提示
+  /// 「安装失败 - 已安装了签名冲突的应用」。返回 false 即可提前告诉用户先卸载旧版本，
+  /// 返回 null 表示无法判断，此时按可安装处理，交由系统决定。
+  static Future<bool?> isSignatureCompatible(String filePath) async {
+    if (!Platform.isAndroid) return null;
+    try {
+      return await _installerChannel.invokeMethod<bool>(
+        'isSignatureCompatible',
+        {'path': filePath},
+      );
+    } catch (e) {
+      debugPrint('校验安装包签名失败，按可安装处理: $e');
+      return null;
+    }
+  }
+
   /// 调起安装器安装 APK，若失败则回退到浏览器下载
   static Future<bool> installApk(String filePath, {String? downloadUrl}) async {
     try {

@@ -3,6 +3,9 @@ package online.onehubai.app
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
+import android.content.pm.Signature
 import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -13,6 +16,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -107,9 +111,60 @@ class MainActivity : FlutterActivity() {
                     }
                     result.success(true)
                 }
+                "isSignatureCompatible" -> {
+                    // Android 不允许签名不同的安装包覆盖升级，撞上时系统只会提示
+                    // 「安装失败 - 已安装了签名冲突的应用」。提前比较签名，
+                    // 界面才能给出「先卸载旧版本」这类可执行的提示。
+                    val path = call.argument<String>("path")
+                    if (path.isNullOrBlank() || !File(path).exists()) {
+                        result.success(null)
+                        return@setMethodCallHandler
+                    }
+                    result.success(isSignatureCompatible(path))
+                }
                 else -> result.notImplemented()
             }
         }
+    }
+
+    /** 比较本机已安装版本与待安装 APK 的签名，无法判断时返回 null */
+    private fun isSignatureCompatible(apkPath: String): Boolean? {
+        return try {
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                PackageManager.GET_SIGNING_CERTIFICATES
+            } else {
+                @Suppress("DEPRECATION")
+                PackageManager.GET_SIGNATURES
+            }
+            val installed = packageManager.getPackageInfo(packageName, flags)
+            val archive = packageManager.getPackageArchiveInfo(apkPath, flags) ?: return null
+            val installedDigest = signatureDigest(collectSigners(installed)) ?: return null
+            val archiveDigest = signatureDigest(collectSigners(archive)) ?: return null
+            installedDigest == archiveDigest
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun collectSigners(info: PackageInfo): Array<Signature>? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val signingInfo = info.signingInfo ?: return null
+            if (signingInfo.hasMultipleSigners()) {
+                signingInfo.apkContentsSigners
+            } else {
+                signingInfo.signingCertificateHistory
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            info.signatures
+        }
+    }
+
+    private fun signatureDigest(signers: Array<Signature>?): String? {
+        val signer = signers?.firstOrNull() ?: return null
+        return MessageDigest.getInstance("SHA-256")
+            .digest(signer.toByteArray())
+            .joinToString("") { "%02x".format(it.toInt() and 0xFF) }
     }
 
     private fun readVideoDurationMs(path: String?, identifier: String?): Long? {

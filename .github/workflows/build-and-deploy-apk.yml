@@ -34,6 +34,29 @@ jobs:
       - name: Run tests
         run: flutter test
 
+      # 还原正式签名文件。
+      # 若缺少密钥必须直接失败：android/app/build.gradle.kts 找不到 key.properties 时会静默回退 debug 签名，
+      # 而 debug 签名无法覆盖安装手机上已装的正式签名版本，用户会看到「安装失败 - 已安装了签名冲突的应用」。
+      - name: Restore Android release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::缺少仓库 Secret ANDROID_KEYSTORE_BASE64，已阻止本次发版，避免再次产出 debug 签名包。"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+          cat > android/key.properties <<EOF
+          storePassword=${KEYSTORE_PASSWORD}
+          keyPassword=${KEY_PASSWORD}
+          keyAlias=${KEY_ALIAS:-upload}
+          storeFile=upload-keystore.jks
+          EOF
+          echo "Release keystore restored."
+
       - name: Build Release APK
         run: |
           RAW_VER=$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//')
@@ -57,7 +80,7 @@ jobs:
           if [ -z "$BUILD_NUM" ] || [ "$BUILD_NUM" -lt "$BASE_CODE" ]; then
             BUILD_NUM=$BASE_CODE
           fi
-          
+
           # 自动定位生成的 release APK 路径
           APK_SRC=$(find build/app/outputs -name "app-release.apk" -o -name "*-release.apk" | head -n 1)
           echo "Found APK at: $APK_SRC"
@@ -68,39 +91,72 @@ jobs:
 
           FILE_BYTES=$(stat -c%s "$APK_SRC" 2>/dev/null || stat -f%z "$APK_SRC")
           FILE_SIZE_MB=$(echo "scale=1; $FILE_BYTES / 1048576" | bc)MB
-          
+
           # 获取最近一条提交信息作为更新日志
           COMMIT_LOG=$(git log -1 --pretty=%B | head -n 3 | tr '\n' ' ' | sed 's/"/\\"/g')
           if [ -z "$COMMIT_LOG" ]; then
             COMMIT_LOG="日常优化与问题修复"
           fi
-          
+
           echo "APK_PATH=$APK_SRC" >> $GITHUB_ENV
           echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
           echo "BUILD_NUM=$BUILD_NUM" >> $GITHUB_ENV
           echo "FILE_SIZE_MB=$FILE_SIZE_MB" >> $GITHUB_ENV
           echo "COMMIT_LOG=$COMMIT_LOG" >> $GITHUB_ENV
 
-      - name: Upload APK directly to OneHub Server via HTTPS API
+      # 上传前校验签名：确保发出去的包一定是正式签名，否则用户一定装不上
+      - name: Verify APK is signed with the release key
         run: |
+          APKSIGNER=$(find "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/build-tools" -type f -name apksigner | sort -V | tail -n 1)
+          echo "Using apksigner: $APKSIGNER"
+          CERTS=$("$APKSIGNER" verify --print-certs "$APK_PATH")
+          echo "$CERTS"
+          if echo "$CERTS" | grep -q "Android Debug"; then
+            echo "::error::APK 仍是 debug 签名，已阻止发版（该包无法覆盖安装正式签名版本）。"
+            exit 1
+          fi
+
+      - name: Upload APK directly to OneHub Server via HTTPS API
+        env:
+          APK_UPLOAD_SECRET: ${{ secrets.APK_UPLOAD_SECRET }}
+        run: |
+          if [ -z "$APK_UPLOAD_SECRET" ]; then
+            echo "::error::缺少仓库 Secret APK_UPLOAD_SECRET，无法发布到 OneHub 服务器。"
+            exit 1
+          fi
+
           echo "Uploading $FILE_SIZE_MB APK to https://api.onehubai.online/api/v1/app/version/upload..."
-          
+
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "https://api.onehubai.online/api/v1/app/version/upload" \
             -F "file=@${APK_PATH}" \
-            -F "secret=onehub-apk-upload-secret-2026" \
+            -F "secret=${APK_UPLOAD_SECRET}" \
             -F "version_name=${VERSION_NAME}" \
             -F "version_code=${BUILD_NUM}" \
             -F "update_log=${COMMIT_LOG}")
-          
+
           HTTP_BODY=$(echo "$RESPONSE" | sed '$d')
           HTTP_STATUS=$(echo "$RESPONSE" | tail -n 1)
-          
+
           echo "Upload HTTP Status: $HTTP_STATUS"
           echo "Upload Response: $HTTP_BODY"
-          
+
+          if [ "$HTTP_STATUS" = "413" ]; then
+            echo "::error::服务端 nginx 返回 413：APK 体积 $FILE_SIZE_MB 超过 client_max_body_size（约 20MB）上限，请在服务器调大该值后重试。"
+            exit 1
+          fi
+
           if [ "$HTTP_STATUS" -ne 200 ]; then
             echo "Failed to upload APK to server, status code: $HTTP_STATUS"
             exit 1
           fi
-          
+
           echo "Successfully published v${VERSION_NAME} (code: ${BUILD_NUM}) to OneHub server!"
+
+      # 兜底：即使服务器上传失败，也能从本次运行页面下载 APK 手动安装
+      - name: Upload APK as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: onehubapp-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: warn

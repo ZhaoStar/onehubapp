@@ -34,4 +34,16 @@ class AppVersionInfo {
   final String publishDate;
   final bool forceUpdate;
   final bool hasUpdate;
+
+  /// 带版本号的下载地址
+  ///
+  /// 线上静态 APK 走 Cloudflare 缓存（Cache-Control 4 小时），地址不变时
+  /// 刚发布的新版本仍会下载到旧安装包，因此追加版本号作为缓存击穿参数。
+  String get freshDownloadUrl {
+    final uri = Uri.tryParse(downloadUrl);
+    if (uri == null || uri.host.isEmpty) return downloadUrl;
+    return uri
+        .replace(queryParameters: {...uri.queryParameters, 'v': '$versionCode'})
+        .toString();
+  }
 }

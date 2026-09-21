@@ -45,6 +45,8 @@ class _UpdateDialogState extends State<UpdateDialog> with WidgetsBindingObserver
   String? _apkPath;
   bool _cancelRequested = false;
   bool _installAllowed = true;
+  /// 待安装包与本机已安装版本签名不一致，系统必定拒绝覆盖安装
+  bool _signatureConflict = false;
   final Stopwatch _downloadWatch = Stopwatch();
 
   bool get _isDownloading => _stage == _UpdateStage.downloading;
@@ -87,6 +89,7 @@ class _UpdateDialogState extends State<UpdateDialog> with WidgetsBindingObserver
       _errorText = '';
       _statusText = '准备开始下载...';
       _cancelRequested = false;
+      _signatureConflict = false;
     });
     _downloadWatch
       ..reset()
@@ -94,7 +97,7 @@ class _UpdateDialogState extends State<UpdateDialog> with WidgetsBindingObserver
 
     try {
       final apkPath = await AppUpdateService.downloadApk(
-        downloadUrl: widget.versionInfo.downloadUrl,
+        downloadUrl: widget.versionInfo.freshDownloadUrl,
         shouldCancel: () => _cancelRequested,
         onProgress: (progress, received, total) {
           if (!mounted) return;
@@ -108,11 +111,20 @@ class _UpdateDialogState extends State<UpdateDialog> with WidgetsBindingObserver
       _downloadWatch.stop();
       if (!mounted || apkPath == null) return;
 
+      // 先比对签名：签名不一致时系统安装器只会报「签名冲突」，直接安装只会白白失败
+      final compatible = await AppUpdateService.isSignatureCompatible(apkPath);
+      if (!mounted) return;
+
       setState(() {
         _apkPath = apkPath;
         _stage = _UpdateStage.downloaded;
-        _statusText = '安装包已下载完成';
+        _signatureConflict = compatible == false;
+        _statusText = _signatureConflict
+            ? '安装包已下载完成，但与当前安装版本的签名不一致'
+            : '安装包已下载完成';
       });
+
+      if (_signatureConflict) return;
 
       await _install();
     } on DownloadCanceledException {
@@ -146,7 +158,7 @@ class _UpdateDialogState extends State<UpdateDialog> with WidgetsBindingObserver
 
     final installed = await AppUpdateService.installApk(
       apkPath,
-      downloadUrl: widget.versionInfo.downloadUrl,
+      downloadUrl: widget.versionInfo.freshDownloadUrl,
     );
 
     await _refreshInstallPermission();
@@ -182,7 +194,7 @@ class _UpdateDialogState extends State<UpdateDialog> with WidgetsBindingObserver
   }
 
   void _openInBrowser() {
-    AppUpdateService.openInBrowser(widget.versionInfo.downloadUrl);
+    AppUpdateService.openInBrowser(widget.versionInfo.freshDownloadUrl);
   }
 
   bool get _primaryBusy =>
@@ -212,9 +224,20 @@ class _UpdateDialogState extends State<UpdateDialog> with WidgetsBindingObserver
   /// 下载结果提示条：失败给原因，成功但未授权安装时给出直达设置页的入口
   Widget _buildStatusBanner() {
     final failed = _stage == _UpdateStage.failed;
-    final accent = failed ? const Color(0xFFDC2626) : const Color(0xFF059669);
-    final background = failed ? const Color(0xFFFEF2F2) : const Color(0xFFECFDF5);
-    final needPermission = !failed && _apkPath != null && !_installAllowed;
+    final conflict = _signatureConflict && !failed;
+    final Color accent;
+    final Color background;
+    if (failed) {
+      accent = const Color(0xFFDC2626);
+      background = const Color(0xFFFEF2F2);
+    } else if (conflict) {
+      accent = const Color(0xFFB45309);
+      background = const Color(0xFFFFFBEB);
+    } else {
+      accent = const Color(0xFF059669);
+      background = const Color(0xFFECFDF5);
+    }
+    final needPermission = !failed && !conflict && _apkPath != null && !_installAllowed;
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -230,7 +253,11 @@ class _UpdateDialogState extends State<UpdateDialog> with WidgetsBindingObserver
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Icon(
-                failed ? Icons.error_outline_rounded : Icons.check_circle_outline_rounded,
+                failed
+                    ? Icons.error_outline_rounded
+                    : conflict
+                        ? Icons.warning_amber_rounded
+                        : Icons.check_circle_outline_rounded,
                 size: 16,
                 color: accent,
               ),
@@ -243,6 +270,15 @@ class _UpdateDialogState extends State<UpdateDialog> with WidgetsBindingObserver
               ),
             ],
           ),
+          if (conflict) ...[
+            const SizedBox(height: 6),
+            const Text(
+              '当前安装的 OneHub 与新安装包使用的签名不同，系统会拒绝覆盖安装。'
+              '请先卸载手机上的旧版本（登录数据保存在服务器，重新登录即可恢复），'
+              '再重新安装；也可以点击下方「使用浏览器下载安装包」手动安装。',
+              style: TextStyle(fontSize: 12, height: 1.4, color: Color(0xFFB45309)),
+            ),
+          ],
           if (needPermission) ...[
             const SizedBox(height: 6),
             const Text(
