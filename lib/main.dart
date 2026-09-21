@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:http/http.dart' as http;
 import 'package:onehubapp/core/api_client.dart';
 import 'package:onehubapp/core/api_error.dart';
@@ -13,6 +14,7 @@ import 'package:onehubapp/core/app_colors.dart';
 import 'package:onehubapp/core/app_message.dart';
 import 'package:onehubapp/core/auth_session.dart';
 import 'package:onehubapp/models/notification_model.dart';
+import 'package:onehubapp/pages/countdown_page.dart';
 import 'package:onehubapp/pages/notifications_page.dart';
 import 'package:onehubapp/pages/oil_price_page.dart';
 import 'package:onehubapp/pages/todo_page.dart';
@@ -35,6 +37,13 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'ONEHUB APP',
       debugShowCheckedModeBanner: false,
+      locale: const Locale('zh', 'CN'),
+      supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: AppColors.primary),
         scaffoldBackgroundColor: AppColors.background,
@@ -917,6 +926,12 @@ class _WorkstationPageState extends State<WorkstationPage> {
       );
       return;
     }
+    if (feature == '倒数日') {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => const CountdownPage()),
+      );
+      return;
+    }
     if (feature == '视频转MP3') {
       Navigator.of(context).push(
         MaterialPageRoute<void>(
@@ -1055,6 +1070,12 @@ class ServicesSection extends StatelessWidget {
       subtitle: '任务规划与到期提醒',
       icon: Icons.checklist_rounded,
       color: Color(0xFF4F46E5),
+    ),
+    ServiceItem(
+      title: '倒数日',
+      subtitle: '重要日期与剩余天数',
+      icon: Icons.event_available_rounded,
+      color: Color(0xFFDB2777),
     ),
     ServiceItem(
       title: '视频转MP3',
