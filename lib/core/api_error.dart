@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 /// 接口调用失败。
 ///
 /// [toString] 直接返回可展示的文案，因此页面里的
@@ -38,4 +40,30 @@ String describeHttpStatus(int statusCode) {
     >= 500 => '服务器开小差了，请稍后重试',
     _ => '请求失败（HTTP $statusCode）',
   };
+}
+
+/// 从服务端返回体里提取可展示的错误文案。
+///
+/// 兼容后端两种风格：`{"message": "..."}` 与 FastAPI 的 `{"detail": "..."}`。
+/// [body] 可以是已解析的对象，也可以是原始 JSON 字符串；
+/// 取不到时返回 null，由调用方决定兜底文案。
+String? readApiMessage(Object? body) {
+  var payload = body;
+  if (payload is String) {
+    if (payload.isEmpty) return null;
+    try {
+      payload = jsonDecode(payload);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  if (payload is Map) {
+    final detail = payload['detail'];
+    if (detail is String && detail.isNotEmpty) return detail;
+    final message = payload['message'];
+    if (message is String && message.isNotEmpty) return message;
+  }
+
+  return null;
 }

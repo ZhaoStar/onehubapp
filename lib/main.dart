@@ -7,6 +7,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:onehubapp/core/api_client.dart';
+import 'package:onehubapp/core/api_error.dart';
 import 'package:onehubapp/core/app_colors.dart';
 import 'package:onehubapp/core/app_message.dart';
 import 'package:onehubapp/core/auth_session.dart';
@@ -1327,10 +1329,6 @@ class VideoToMp3Page extends StatefulWidget {
 }
 
 class _VideoToMp3PageState extends State<VideoToMp3Page> {
-  static final Uri _uploadInitUri = Uri.https(
-    'api.onehubai.online',
-    '/api/v1/upload/init',
-  );
   static final Uri _tasksUri = Uri.https(
     'api.onehubai.online',
     '/api/v1/convert/tasks',
@@ -1467,7 +1465,6 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
       final endTime = _endTimeController.text.trim();
       final totalChunks = (file.size / _chunkSize).ceil();
       final uploadInit = await _initChunkUpload(
-        accessToken: session.accessToken,
         fileName: file.name,
         fileSize: file.size,
         totalChunks: totalChunks,
@@ -1488,10 +1485,17 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
         }
 
         await _uploadChunk(
-          accessToken: session.accessToken,
           file: file,
           uploadId: uploadId,
           chunkIndex: index,
+          onProgress: (chunkProgress) {
+            if (!mounted) return;
+            setState(() {
+              _localProgress = ((index + chunkProgress) / totalChunks) * 0.9;
+              _submitHint =
+                  '正在上传分片 ${index + 1}/$totalChunks  ${(chunkProgress * 100).toInt()}%';
+            });
+          },
         );
 
         if (mounted) {
@@ -1510,7 +1514,6 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
       }
 
       await _completeChunkUpload(
-        accessToken: session.accessToken,
         uploadId: uploadId,
         startTime: startTime.isEmpty ? null : startTime,
         endTime: endTime.isEmpty ? null : endTime,
@@ -1528,9 +1531,11 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
       await _refreshTasks(showLoading: false);
     } catch (error) {
       if (!mounted) return;
-      final message = error is FormatException
-          ? error.message
-          : '上传失败，请检查网络后重试';
+      final message = switch (error) {
+        FormatException() => error.message,
+        ApiException() => error.message,
+        _ => '上传失败，请检查网络后重试',
+      };
       AppMessage.show(context, message, type: AppMessageType.error);
       setState(() {
         _submitHint = message;
@@ -1566,123 +1571,86 @@ class _VideoToMp3PageState extends State<VideoToMp3Page> {
   }
 
   Future<_UploadInitResult> _initChunkUpload({
-    required String accessToken,
     required String fileName,
     required int fileSize,
     required int totalChunks,
   }) async {
-    final client = HttpClient();
-    try {
-      final request = await client.postUrl(_uploadInitUri);
-      request.headers.contentType = ContentType.json;
-      request.headers.set(
-        HttpHeaders.authorizationHeader,
-        'Bearer $accessToken',
-      );
-      request.write(
-        jsonEncode({
-          'filename': fileName,
-          'file_size': fileSize,
-          'total_chunks': totalChunks,
-          'chunk_size': _chunkSize,
-        }),
-      );
-      final response = await request.close();
-      final body = await utf8.decoder.bind(response).join();
-      if (response.statusCode != HttpStatus.ok) {
-        throw FormatException(_readApiMessage(body, fallback: '初始化上传失败'));
-      }
-      final payload = jsonDecode(body) as Map<String, dynamic>;
-      final uploadId = payload['upload_id']?.toString();
-      final chunksReceived =
-          (payload['chunks_received'] as List<dynamic>? ?? const [])
-              .map((item) => int.tryParse(item.toString()))
-              .whereType<int>()
-              .toSet();
-      if (uploadId == null || uploadId.isEmpty) {
-        throw const FormatException('初始化上传失败，服务端未返回 upload_id');
-      }
-      return _UploadInitResult(
-        uploadId: uploadId,
-        completedChunks: chunksReceived,
-      );
-    } finally {
-      client.close(force: true);
+    final response = await ApiClient.request(
+      '/api/v1/upload/init',
+      method: 'POST',
+      data: {
+        'filename': fileName,
+        'file_size': fileSize,
+        'total_chunks': totalChunks,
+        'chunk_size': _chunkSize,
+      },
+    );
+
+    final payload = ApiClient.asMap(response);
+    final uploadId = payload['upload_id']?.toString();
+    final chunksReceived =
+        (payload['chunks_received'] as List<dynamic>? ?? const [])
+            .map((item) => int.tryParse(item.toString()))
+            .whereType<int>()
+            .toSet();
+    if (uploadId == null || uploadId.isEmpty) {
+      throw const ApiException('初始化上传失败，服务端未返回 upload_id');
     }
+
+    return _UploadInitResult(
+      uploadId: uploadId,
+      completedChunks: chunksReceived,
+    );
   }
 
   Future<void> _uploadChunk({
-    required String accessToken,
     required PlatformFile file,
     required String uploadId,
     required int chunkIndex,
+    void Function(double progress)? onProgress,
   }) async {
     final start = chunkIndex * _chunkSize;
     final end = (start + _chunkSize > file.size)
         ? file.size
         : start + _chunkSize;
     final length = end - start;
-    final uri = Uri.https(
-      'api.onehubai.online',
+
+    // 鉴权头、超时与错误文案统一由 ApiClient 负责，这里只负责切片与进度上报
+    await ApiClient.request(
       '/api/v1/upload/$uploadId/chunk',
-    );
-
-    final request = http.MultipartRequest('POST', uri)
-      ..headers[HttpHeaders.authorizationHeader] = 'Bearer $accessToken'
-      ..fields['chunk_index'] = '$chunkIndex';
-
-    final stream = file.xFile.openRead(start, end);
-    request.files.add(
-      http.MultipartFile(
-        'file',
-        stream,
-        length,
+      method: 'POST',
+      data: ApiClient.streamFileForm(
+        field: 'file',
+        streamFactory: () => file.xFile.openRead(start, end),
+        length: length,
         filename: '${file.name}.part$chunkIndex',
+        fields: {'chunk_index': '$chunkIndex'},
       ),
+      onSendProgress: (sent, total) {
+        if (total <= 0) return;
+        onProgress?.call(sent / total);
+      },
     );
-
-    final response = await request.send();
-    final body = await response.stream.bytesToString();
-    if (response.statusCode != HttpStatus.ok) {
-      throw FormatException(_readApiMessage(body, fallback: '上传分片失败'));
-    }
   }
 
   Future<void> _completeChunkUpload({
-    required String accessToken,
     required String uploadId,
     String? startTime,
     String? endTime,
   }) async {
-    final client = HttpClient();
-    try {
-      final request = await client.postUrl(
-        Uri.https('api.onehubai.online', '/api/v1/upload/$uploadId/complete'),
-      );
-      request.headers.contentType = ContentType.json;
-      request.headers.set(
-        HttpHeaders.authorizationHeader,
-        'Bearer $accessToken',
-      );
-      request.write(
-        jsonEncode({
-          'bitrate': '192k',
-          'sample_rate': 44100,
-          'channels': 2,
-          'start_time': startTime?.trim().isEmpty ?? true
-              ? null
-              : startTime?.trim(),
-          'end_time': endTime?.trim().isEmpty ?? true ? null : endTime?.trim(),
-        }),
-      );
-      final response = await request.close();
-      final body = await utf8.decoder.bind(response).join();
-      if (response.statusCode != HttpStatus.ok) {
-        throw FormatException(_readApiMessage(body, fallback: '创建转换任务失败'));
-      }
-    } finally {
-      client.close(force: true);
-    }
+    await ApiClient.request(
+      '/api/v1/upload/$uploadId/complete',
+      method: 'POST',
+      data: {
+        'bitrate': '192k',
+        'sample_rate': 44100,
+        'channels': 2,
+        'start_time': startTime?.trim().isEmpty ?? true
+            ? null
+            : startTime?.trim(),
+        'end_time': endTime?.trim().isEmpty ?? true ? null : endTime?.trim(),
+      },
+    );
   }
 
   Future<void> _refreshTasks({bool showLoading = true}) async {
