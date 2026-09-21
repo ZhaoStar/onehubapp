@@ -36,12 +36,26 @@ jobs:
           set +e
           flutter test 2>&1 | tee /tmp/flutter-test.log
           status=${PIPESTATUS[0]}
+          # 去掉 ANSI 颜色码，避免 grep 把日志当成二进制而匹配不到
+          sed -r 's/\x1B\[[0-9;]*[mK]//g' /tmp/flutter-test.log > /tmp/flutter-test.clean.log
+          lines=$(wc -l < /tmp/flutter-test.clean.log)
           if [ "$status" -ne 0 ]; then
             # 把失败用例名打成 Actions 注解，未登录也能直接看到是哪个用例挂了
-            grep -E '\[E\]' /tmp/flutter-test.log | head -20 | while IFS= read -r line; do
-              echo "::error::$line"
-            done
+            report=$(grep -aE '\[E\]' /tmp/flutter-test.clean.log | head -10 \
+              | tr -d '\r' | tr '\n' ';' | sed 's/%/%25/g')
+            if [ -z "$report" ]; then
+              report=$(tail -40 /tmp/flutter-test.clean.log | tr -d '\r' | tr '\n' ';' | sed 's/%/%25/g')
+            fi
+            echo "::error::测试失败（日志 ${lines} 行）：${report}"
             echo "::error::单元测试未通过，已阻止本次发版"
+            {
+              echo "## 单元测试失败用例"
+              echo '```'
+              grep -aE '\[E\]' /tmp/flutter-test.clean.log | head -20
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice::单元测试全部通过（日志 ${lines} 行）"
           fi
           exit "$status"
 
